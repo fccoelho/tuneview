@@ -1,55 +1,58 @@
 import flet as ft
-from flet import (AppBar, Page, Text, ElevatedButton, UserControl,
-    View, colors, TextField, FloatingActionButton, icons, margin, Column,
-    Row, Dropdown, dropdown, PopupMenuItem, Icon, PopupMenuButton, Container,
-    AlertDialog)
+# from flet import (AppBar, Text, ElevatedButton, UserControl,
+#     View, colors, TextField, FloatingActionButton, icons, margin, Column,
+#     Row, Dropdown, dropdown, PopupMenuItem, Icon, PopupMenuButton, Container,
+#     AlertDialog)
 from search import search_song
 from tabs import build_tabs
 
 
-class ChordViewApp(UserControl):
-    def __init__(self, page: Page):
+class ChordViewApp(ft.UserControl):
+    def __init__(self, page: ft.Page):
         super().__init__()
         self.page = page
-        self.dlg = AlertDialog(
-            title=Text("Not Found!"),
-            content = Text(""),
+        self.dlg = ft.AlertDialog(
+            title=ft.Text("Not Found!"),
+            content = ft.Text(""),
             actions= [ft.TextButton("Ok", on_click=self.close_dialog)],
             on_dismiss=lambda e: 1
         )
         self.appbar_items = [
-            PopupMenuItem(text="About"),
-            PopupMenuItem(),  # divider
-            PopupMenuItem(text="Settings")
+            ft.PopupMenuItem(text="Songs"),
+            ft.PopupMenuItem(text="Chord Progressions"),
+            ft.PopupMenuItem(text="About"),
+            ft.PopupMenuItem(),  # divider
+            ft.PopupMenuItem(text="Settings")
         ]
-        self.appbar = AppBar(
-            leading=Icon(icons.AUDIOTRACK),
+        self.appbar = ft.AppBar(
+            leading=ft.Icon(ft.icons.AUDIOTRACK),
             leading_width=100,
-            title=Text("Chord View", size=32, text_align="start"),
+            title=ft.Text("Chord View", size=32, text_align="start"),
             center_title=False,
             toolbar_height=75,
-            bgcolor=colors.LIGHT_BLUE_ACCENT_700,
+            bgcolor=ft.colors.LIGHT_BLUE_ACCENT_700,
             actions=[
-                Container(
-                    content=PopupMenuButton(
+                ft.Container(
+                    content=ft.PopupMenuButton(
                         items=self.appbar_items
                     ),
-                    margin=margin.only(left=50, right=25)
+                    margin=ft.margin.only(left=50, right=25)
                 )
             ],
         )
+        
 
         self.update()
 
     def search_clicked(self, e):
         titles = sorted([t[0] for t in search_song(self.song.value)])
         if not titles:
-            self.dlg.content = Text(f"No song containing the word '{self.song.value}'.")
+            self.dlg.content = ft.Text(f"No song containing the word '{self.song.value}'.")
             self.page.dialog = self.dlg
             self.page.dialog.open = True
             self.page.update()
         else:
-            self.sdd.options = [dropdown.Option(t) for t in titles]
+            self.sdd.options = [ft.dropdown.Option(t) for t in titles]
             self.sdd.value = titles[0]
         self.update()
 
@@ -65,22 +68,28 @@ class ChordViewApp(UserControl):
     def build(self):
         ''' Build the GUI '''
         titles = sorted([t[0] for t in search_song()])
-        self.song = TextField(hint_text="Filter the song list", width=400)
-        self.sngname = Text(" ", style="titleLarge")
-        self.selection = Row([Text("Selected Song: ", style="titleMedium"), self.sngname])
-        self.sdd = Dropdown(width=600, options=[dropdown.Option(t) for t in titles], 
+        self.song = ft.TextField(hint_text="Filter the song list", tooltip="Type a word", width=400)
+        self.sngname = ft.Text(" ", style="titleLarge")
+        self.selection = ft.Row([ft.Text("Selected Song: ", style="titleMedium"), self.sngname])
+        self.sdd = ft.Dropdown(width=600, options=[ft.dropdown.Option(t) for t in titles], 
                             on_change=self.select_song, autofocus=True,
                             value=titles[0])
         self.page.appbar = self.appbar
-        self.search_view = Row(controls=[self.sdd, self.song, FloatingActionButton(icon=icons.SEARCH, on_click=self.search_clicked)])
-        return Column(controls=[self.search_view, self.selection])
+        self.search_view = ft.Row(controls=[self.sdd, self.song, 
+                                         ft.FloatingActionButton(icon=ft.icons.SEARCH,
+                                                                 tooltip="Click to filter the list", 
+                                                                 on_click=self.search_clicked)])
+        
+        
+    
+        return ft.Column(controls=[self.search_view, self.selection])
 
 
 
 
-def main(page: Page):
+def main(page: ft.Page):
     page.title = "Chord Viewer"
-    page.bgcolor = colors.BLUE_GREY_200
+    page.bgcolor = ft.colors.BLUE_GREY_200
     app = ChordViewApp(page)
     page.add(app)
 
