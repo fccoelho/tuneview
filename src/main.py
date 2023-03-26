@@ -49,6 +49,7 @@ class ChordViewApp(UserControl):
             self.page.dialog.open = True
             self.page.update()
         else:
+            self.sdd.options = [dropdown.Option(t) for t in titles]
             self.sdd.value = titles[0]
         self.update()
 
@@ -64,7 +65,7 @@ class ChordViewApp(UserControl):
     def build(self):
         ''' Build the GUI '''
         titles = sorted([t[0] for t in search_song()])
-        self.song = TextField(hint_text="Which song do you want to play?", width=400)
+        self.song = TextField(hint_text="Filter the song list", width=400)
         self.sngname = Text(" ", style="titleLarge")
         self.selection = Row([Text("Selected Song: ", style="titleMedium"), self.sngname])
         self.sdd = Dropdown(width=600, options=[dropdown.Option(t) for t in titles], 
