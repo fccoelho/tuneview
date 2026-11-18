@@ -1,6 +1,6 @@
 import sqlite3
 
-from chordview.library import Library, SongInfo, fold, search
+from tuneview.library import Library, SongInfo, fold, search
 
 
 def song(id_, title, composer=""):

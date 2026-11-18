@@ -35,8 +35,8 @@ CREATE TABLE IF NOT EXISTS song (
 
 
 def default_db_path() -> Path:
-    """The library file: $CHORDVIEW_DB, else leadsheets.sqlite at the project root."""
-    env = os.environ.get("CHORDVIEW_DB")
+    """The library file: $TUNEVIEW_DB, else leadsheets.sqlite at the project root."""
+    env = os.environ.get("TUNEVIEW_DB")
     if env:
         return Path(env).expanduser()
     return Path(__file__).resolve().parents[2] / "leadsheets.sqlite"

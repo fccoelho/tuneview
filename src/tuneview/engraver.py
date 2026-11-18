@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 import threading
 import xml.etree.ElementTree as ET
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -18,6 +19,8 @@ import resvg_py
 import verovio
 
 MEI = "{http://www.music-encoding.org/ns/mei}"
+SVG = "{http://www.w3.org/2000/svg}"
+XML_ID = "{http://www.w3.org/XML/1998/namespace}id"
 
 # Written pitch relative to concert pitch, in semitones.
 INSTRUMENTS: dict[str, int] = {
@@ -123,8 +126,10 @@ class ChartChord:
 @dataclass
 class ChartBar:
     number: str
+    id: str = ""  # MEI xml:id, which links the bar to playback and the page
     chords: list[ChartChord] = field(default_factory=list)
-    beats: float = 4
+    beats: float = 4  # meter count
+    unit: int = 4  # meter unit: 4 = quarter-note beats, 8 = eighth-note beats
     repeat_start: bool = False
     repeat_end: bool = False
     final: bool = False
@@ -145,16 +150,22 @@ def chart_from_mei(mei: str) -> list[ChartBar]:
     bars: list[ChartBar] = []
     seen_endings: set[int] = set()
 
+    unit = 4
+
+    def set_meter(count: str | None, unit_: str | None) -> None:
+        nonlocal beats, unit
+        if count:
+            beats = float(sum(float(c) for c in count.split("+")))
+        if unit_:
+            unit = int(unit_)
+
     def walk(el: ET.Element, ending: ET.Element | None) -> None:
-        nonlocal beats
         for child in el:
             tag = child.tag.removeprefix(MEI)
             if tag == "scoreDef":
-                count = child.get("meter.count")
-                if count is None and (ms := child.find(f".//{MEI}meterSig")) is not None:
-                    count = ms.get("count")
-                if count:
-                    beats = float(sum(float(c) for c in count.split("+")))
+                if (ms := child.find(f".//{MEI}meterSig")) is not None:
+                    set_meter(ms.get("count"), ms.get("unit"))
+                set_meter(child.get("meter.count"), child.get("meter.unit"))
             elif tag == "ending":
                 walk(child, child)
             elif tag in ("section", "mdiv", "score", "body", "music"):
@@ -163,10 +174,9 @@ def chart_from_mei(mei: str) -> list[ChartBar]:
                 bars.append(_bar(child, ending))
 
     def _bar(m: ET.Element, ending: ET.Element | None) -> ChartBar:
-        nonlocal beats
-        if (ms := m.find(f".//{MEI}meterSig")) is not None and ms.get("count"):
-            beats = float(sum(float(c) for c in ms.get("count").split("+")))
-        bar = ChartBar(number=m.get("n", ""), beats=beats)
+        if (ms := m.find(f".//{MEI}meterSig")) is not None:
+            set_meter(ms.get("count"), ms.get("unit"))
+        bar = ChartBar(number=m.get("n", ""), id=m.get(XML_ID, ""), beats=beats, unit=unit)
         left, right = m.get("left", ""), m.get("right", "")
         bar.repeat_start = left in ("rptstart", "rptboth") or right == "rptboth"
         bar.repeat_end = right in ("rptend", "rptboth")
@@ -213,6 +223,107 @@ def chart_from_mei(mei: str) -> list[ChartBar]:
 class Engraving:
     pages: int
     mei: str
+    # Bars in playing order (repeats played out): (bar id, start in quarter notes)
+    timeline: list[tuple[str, float]] = field(default_factory=list)
+    # The first staff's notes in playing order: (start, end, MIDI pitch), in
+    # quarter notes, tied notes merged; written pitch (after transposition)
+    melody: list[tuple[float, float, int]] = field(default_factory=list)
+    # Tempo changes: (position in quarter notes, beats per minute)
+    tempos: list[tuple[float, float]] = field(default_factory=list)
+
+
+@dataclass
+class Page:
+    png: bytes
+    aspect: float  # height / width
+    # Where each bar sits on the page, as fractions of its width and height:
+    # bar id -> (left, top, right, bottom) of the bar's staves
+    boxes: dict[str, tuple[float, float, float, float]] = field(default_factory=dict)
+
+
+def _base_id(xml_id: str) -> str:
+    """Verovio names the copies of repeated bars and notes '<id>-rend2'."""
+    return re.sub(r"-rend\d+$", "", xml_id)
+
+
+def _timeline(timemap: list[dict]) -> list[tuple[str, float]]:
+    """Bar starts from Verovio's timemap, in playing order."""
+    return [(_base_id(e["measureOn"]), float(e.get("qstamp", 0)))
+            for e in timemap if e.get("measureOn") is not None]
+
+
+def _melody(timemap: list[dict], mei_root: ET.Element,
+            pitch_of: Callable[[str], int]) -> list[tuple[float, float, int]]:
+    """The first staff's notes from the timemap.
+
+    Built from the timemap rather than Verovio's MIDI export, which leaves
+    slash/beat-repeat bars silent (the export voices them) and can't run out of
+    memory on some files (the export can).
+    """
+    staff1 = {
+        n.get(XML_ID)
+        for st in mei_root.iter(f"{MEI}staff") if st.get("n") == "1"
+        for n in st.iter(f"{MEI}note")
+    }
+    tie_ends = {t.get("endid", "").lstrip("#") for t in mei_root.iter(f"{MEI}tie")}
+    started: dict[str, float] = {}
+    notes: list[tuple[float, float, int, str]] = []
+    for entry in timemap:
+        q = float(entry.get("qstamp", 0))
+        for nid in entry.get("off", []):
+            if nid in started:
+                notes.append((started.pop(nid), q, pitch_of(_base_id(nid)), _base_id(nid)))
+        for nid in entry.get("on", []):
+            if _base_id(nid) in staff1:
+                started[nid] = q
+    notes.sort()
+    merged: list[tuple[float, float, int]] = []
+    for start, end, pitch, nid in notes:
+        if nid in tie_ends:  # a tied continuation: lengthen the note it hangs from
+            for i in range(len(merged) - 1, -1, -1):
+                s, e, p = merged[i]
+                if p == pitch and abs(e - start) < 1e-6:
+                    merged[i] = (s, end, p)
+                    break
+            else:
+                merged.append((start, end, pitch))
+        else:
+            merged.append((start, end, pitch))
+    return merged
+
+
+_LINE_RE = re.compile(r"M\s*(-?[\d.]+)\s+(-?[\d.]+)\s*L\s*(-?[\d.]+)\s+(-?[\d.]+)")
+
+
+def bar_boxes(svg: str) -> dict[str, tuple[float, float, float, float]]:
+    """Each bar's staff area on a Verovio SVG page, as fractions of the page."""
+    root = ET.fromstring(svg)
+    inner = next((e for e in root.iter(f"{SVG}svg") if "definition-scale" in e.get("class", "")), None)
+    if inner is None:
+        return {}
+    _, _, vw, vh = (float(v) for v in inner.get("viewBox", "0 0 1 1").split())
+    tx = ty = 0.0
+    margin = next((e for e in root.iter(f"{SVG}g") if e.get("class") == "page-margin"), None)
+    if margin is not None and (m := re.search(r"translate\(([-\d.]+),\s*([-\d.]+)\)",
+                                              margin.get("transform", ""))):
+        tx, ty = float(m.group(1)), float(m.group(2))
+    boxes = {}
+    for g in root.iter(f"{SVG}g"):
+        if "measure" not in g.get("class", "").split():
+            continue
+        xs, ys = [], []
+        for staff in g.iter(f"{SVG}g"):
+            if "staff" not in staff.get("class", "").split():
+                continue
+            for path in staff.findall(f"{SVG}path"):
+                if m := _LINE_RE.match(path.get("d", "")):
+                    x1, y1, x2, _ = (float(v) for v in m.groups())
+                    xs += [x1, x2]
+                    ys.append(y1)
+        if xs:
+            boxes[g.get("id", "")] = ((min(xs) + tx) / vw, (min(ys) + ty) / vh,
+                                      (max(xs) + tx) / vw, (max(ys) + ty) / vh)
+    return boxes
 
 
 class Engraver:
@@ -248,17 +359,30 @@ class Engraver:
             )
             if not self._tk.loadData(fix_harmony_offsets(musicxml)):
                 raise ValueError("Verovio could not read this MusicXML file")
-            return Engraving(pages=self._tk.getPageCount(), mei=self._tk.getMEI())
+            mei = self._tk.getMEI()
+            timemap = self._tk.renderToTimemap({"includeMeasures": True})
+            tempos = [(float(e.get("qstamp", 0)), float(e["tempo"])) for e in timemap if "tempo" in e]
+            melody = _melody(timemap, ET.fromstring(mei),
+                             lambda nid: int(self._tk.getMIDIValuesForElement(nid)["pitch"]))
+            return Engraving(
+                pages=self._tk.getPageCount(),
+                mei=mei,
+                timeline=_timeline(timemap),
+                melody=melody,
+                tempos=tempos,
+            )
 
-    def render_page(self, page: int, *, width_px: int = 1600, ink: str = "#000000") -> bytes:
-        """PNG of one page (1-based) of the loaded score, on a transparent background."""
+    def render_page(self, page: int, *, width_px: int = 1600, ink: str = "#000000") -> Page:
+        """One page (1-based) of the loaded score: PNG on a transparent background,
+        plus where each bar is on it."""
         with self._lock:
             svg = self._tk.renderToSVG(page)
+        boxes = bar_boxes(svg)
         svg = _CSYM_RE.sub(_fix_csym, svg)
         # Glyphs and lines use currentColor; text has no fill and would stay black.
         svg = svg.replace('color="black"', f'color="{ink}" fill="{ink}"', 1)
         fonts = _fonts()
-        return bytes(
+        png = bytes(
             resvg_py.svg_to_bytes(
                 svg_string=svg,
                 width=width_px,
@@ -268,6 +392,9 @@ class Engraver:
                 serif_family="DejaVu Serif",
             )
         )
+        # PNG header: width and height are big-endian u32s at bytes 16-24
+        w, h = int.from_bytes(png[16:20], "big"), int.from_bytes(png[20:24], "big")
+        return Page(png, h / w if w else 1.4, boxes)
 
 
 def _fix_csym(m: re.Match) -> str:

@@ -160,5 +160,5 @@ cython_debug/
 .idea/
 .aider*
 
-# Leadsheet library: rebuilt locally with `uv run chordview-import <folder>`
+# Leadsheet library: rebuilt locally with `uv run tuneview-import <folder>`
 leadsheets.sqlite

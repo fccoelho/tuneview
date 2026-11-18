@@ -1,6 +1,6 @@
-"""Import a folder of MusicXML leadsheets into the Chordview library.
+"""Import a folder of MusicXML leadsheets into the TuneView library.
 
-Usage: chordview-import /path/to/musicxml [--db leadsheets.sqlite]
+Usage: tuneview-import /path/to/musicxml [--db leadsheets.sqlite]
 """
 
 from __future__ import annotations

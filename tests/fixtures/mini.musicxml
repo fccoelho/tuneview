@@ -5,7 +5,7 @@
   <identification>
     <creator type="composer">Test Composer
 Arr. Someone Else</creator>
-    <rights>Written for the Chordview test suite</rights>
+    <rights>Written for the TuneView test suite</rights>
   </identification>
   <part-list>
     <score-part id="P1"><part-name>Lead</part-name></score-part>
@@ -41,7 +41,8 @@ Arr. Someone Else</creator>
     <measure number="4">
       <barline location="left"><ending number="2" type="start">2.</ending></barline>
       <harmony><root><root-step>F</root-step></root><kind text="6">major-sixth</kind></harmony>
-      <note><pitch><step>F</step><octave>4</octave></pitch><duration>96</duration><voice>1</voice><type>whole</type></note>
+      <note><pitch><step>F</step><octave>4</octave></pitch><duration>48</duration><tie type="start"/><voice>1</voice><type>half</type><notations><tied type="start"/></notations></note>
+      <note><pitch><step>F</step><octave>4</octave></pitch><duration>48</duration><tie type="stop"/><voice>1</voice><type>half</type><notations><tied type="stop"/></notations></note>
       <barline location="right"><bar-style>light-heavy</bar-style><ending number="2" type="discontinue"/></barline>
     </measure>
   </part>

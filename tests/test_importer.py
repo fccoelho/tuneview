@@ -1,7 +1,7 @@
 import pytest
 
-from chordview.importer import import_folder, key_name, parse_metadata, split_composer
-from chordview.library import Library
+from tuneview.importer import import_folder, key_name, parse_metadata, split_composer
+from tuneview.library import Library
 
 
 @pytest.mark.parametrize(
@@ -34,7 +34,7 @@ def test_parse_metadata(mini_path):
         "title": "Test Tune",
         "composer": "Test Composer",
         "arranger": "Someone Else",
-        "copyright": "Written for the Chordview test suite",
+        "copyright": "Written for the TuneView test suite",
         "key": "F",
         "time": "4/4",
         "tempo": 120,

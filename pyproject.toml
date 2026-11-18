@@ -1,5 +1,5 @@
 [project]
-name = "chordview"
+name = "tuneview"
 version = "0.2.0"
 description = "A leadsheet viewer for musicians: melody, chords and lyrics on the music stand"
 authors = [{ name = "Flávio Codeço Coelho", email = "fccoelho@gmail.com" }]
@@ -14,11 +14,14 @@ dependencies = [
     "verovio>=6.4",
     # Rasterizes Verovio's SVG for display; Flet's SVG support can't draw it.
     "resvg-py>=0.2",
+    # Playback: synthesize the melody and accompaniment, play them.
+    "miniaudio>=1.73",
+    "numpy>=2.0",
 ]
 
 [project.scripts]
-chordview = "chordview.app:run"
-chordview-import = "chordview.importer:main"
+tuneview = "tuneview.app:run"
+tuneview-import = "tuneview.importer:main"
 
 [dependency-groups]
 dev = [

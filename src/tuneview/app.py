@@ -1,8 +1,9 @@
-"""Chordview's Flet interface: a library on the left, the leadsheet on the music stand."""
+"""TuneView's Flet interface: a library on the left, the leadsheet on the music stand."""
 
 from __future__ import annotations
 
 import asyncio
+import bisect
 import os
 from collections import Counter
 from dataclasses import dataclass, field
@@ -13,15 +14,30 @@ from .engraver import (
     INSTRUMENTS,
     ChartBar,
     Engraver,
+    Page,
     chart_from_mei,
     normalize_shift,
     split_chord,
 )
 from .library import Library, SongInfo, search
+from .player import (
+    PLAY_MODES,
+    SWING,
+    Player,
+    accompaniment,
+    bar_times,
+    melody,
+    perform,
+    should_swing,
+    synthesize,
+    tempo_map,
+)
 
 SHEET, CHART = "sheet", "chart"
 ZOOM_STEPS = [30, 35, 40, 45, 50, 55, 60, 70, 80]
+SPEEDS = [0.5, 0.6, 0.75, 0.9, 1.0, 1.1, 1.25, 1.5]
 SIDEBAR_WIDTH = 330
+SHEET_PAD = 12  # vertical padding around each engraved page
 NARROW = 900  # below this width the library and the music take turns
 SEED_COLOR = "#3f51b5"
 
@@ -44,11 +60,18 @@ def transpose_key(key: str, semitones: int) -> str:
 @dataclass
 class Rendered:
     song: SongInfo
-    pages: list[bytes]
+    pages: list[Page]
     bars: list[ChartBar]
     shift: int
     page_width: int = 0
+    timeline: list[tuple[str, float]] = field(default_factory=list)
+    melody: list[tuple[float, float, int]] = field(default_factory=list)
+    tempos: list[tuple[float, float]] = field(default_factory=list)
     error: str = ""
+
+    @property
+    def playable(self) -> bool:
+        return bool(self.timeline) and (bool(self.melody) or any(b.chords for b in self.bars))
 
 
 @dataclass
@@ -63,24 +86,28 @@ class State:
     library_open: bool = True
     search_focused: bool = False
     render_token: int = 0
+    speed: float = 1.0
+    play_mode: str = "melody"  # see player.PLAY_MODES
+    swing: str = "Off"  # see player.SWING; swing is opt-in
 
     @property
     def total_shift(self) -> int:
         return normalize_shift(INSTRUMENTS[self.instrument] + self.shift)
 
 
-class ChordView:
+class TuneView:
     def __init__(self, page: ft.Page, library: Library):
         self.page = page
         self.library = library
         self.engraver = Engraver()
+        self.player = Player()
         self.state = State(songs=library.songs())
         self._build()
 
     # ------------------------------------------------------------------ layout
     def _build(self) -> None:
         p = self.page
-        p.title = "Chordview"
+        p.title = "TuneView"
         p.theme = ft.Theme(color_scheme_seed=SEED_COLOR)
         p.dark_theme = ft.Theme(color_scheme_seed=SEED_COLOR)
         p.theme_mode = ft.ThemeMode.SYSTEM
@@ -89,6 +116,9 @@ class ChordView:
         p.on_keyboard_event = self.on_key
         p.on_platform_brightness_change = self.on_theme_changed
         p.on_resize = self.on_resize
+        # The sound is made in this process: stop it when the window or tab goes away.
+        p.on_disconnect = lambda e: self.player.stop()
+        p.on_close = lambda e: self.player.stop()
 
         # Library -----------------------------------------------------------
         self.search_field = ft.TextField(
@@ -116,7 +146,7 @@ class ChordView:
                     ft.Row(
                         [
                             ft.Icon(ft.Icons.QUEUE_MUSIC, color=ft.Colors.PRIMARY, size=28),
-                            ft.Text("Chordview", size=22, weight=ft.FontWeight.W_600),
+                            ft.Text("TuneView", size=22, weight=ft.FontWeight.W_600),
                         ],
                         spacing=10,
                     ),
@@ -181,6 +211,45 @@ class ChordView:
                                           on_click=self.toggle_theme)
         self.fullscreen_button = ft.IconButton(ft.Icons.FULLSCREEN, tooltip="Full screen (F11)",
                                                on_click=self.toggle_fullscreen, visible=not p.web)
+        # Transport bar (bottom of the viewer) --------------------------------
+        self.play_button = ft.IconButton(
+            ft.Icons.PLAY_ARROW_ROUNDED, tooltip="Play (P)", disabled=True,
+            icon_size=30, style=ft.ButtonStyle(bgcolor=ft.Colors.PRIMARY_CONTAINER),
+            on_click=self.toggle_playback,
+        )
+        self.time_text = ft.Text("0:00", size=12, color=ft.Colors.ON_SURFACE_VARIANT, width=80)
+        self.play_progress = ft.ProgressBar(value=0, expand=True, bar_height=4, border_radius=2)
+        self.play_mode_dd = ft.Dropdown(
+            value=self.state.play_mode, width=212, dense=True, label="Play",
+            options=[ft.DropdownOption(key=k, text=v) for k, v in PLAY_MODES.items()],
+            on_select=self.on_playback_setting,
+        )
+        self.swing_dd = ft.Dropdown(
+            value=self.state.swing, width=136, dense=True, label="Swing",
+            options=[ft.DropdownOption(key=k, text=k) for k in SWING],
+            on_select=self.on_playback_setting,
+        )
+        self.speed_dd = ft.Dropdown(
+            value="1.0", width=112, dense=True, label="Tempo",
+            options=[ft.DropdownOption(key=str(s), text=f"{round(s * 100)}%") for s in SPEEDS],
+            on_select=self.on_playback_setting,
+        )
+        self.transport = ft.Container(
+            visible=False,
+            padding=ft.Padding.symmetric(horizontal=12, vertical=8),
+            bgcolor=ft.Colors.SURFACE_CONTAINER_LOW,
+            border=ft.Border.only(top=ft.BorderSide(1, ft.Colors.OUTLINE_VARIANT)),
+            content=ft.Row(
+                wrap=True, spacing=12, run_spacing=8,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                controls=[
+                    ft.Row([self.play_button, self.time_text,
+                            ft.Container(self.play_progress, width=220)],
+                           spacing=10, tight=True, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                    ft.Row([self.play_mode_dd, self.swing_dd, self.speed_dd], spacing=8, tight=True),
+                ],
+            ),
+        )
         self.toolbar = ft.Container(
             padding=ft.Padding.only(left=8, right=12, top=8, bottom=8),
             border=ft.Border.only(bottom=ft.BorderSide(1, ft.Colors.OUTLINE_VARIANT)),
@@ -203,18 +272,29 @@ class ChordView:
                         wrap=True,
                         spacing=12,
                         vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                        controls=[self.mode_button, self.instrument_dd, transpose_box, zoom_box,
-                                  self.theme_button, self.fullscreen_button],
+                        controls=[self.mode_button, self.instrument_dd, transpose_box,
+                                  zoom_box, self.theme_button, self.fullscreen_button],
                     ),
                 ],
             ),
         )
 
-        self.content = ft.ListView(expand=True, spacing=16, padding=ft.Padding.all(16))
+        # A Column rather than a ListView: scroll_to(scroll_key=…) needs every item built.
+        self.content = ft.Column(expand=True, spacing=16, scroll=ft.ScrollMode.AUTO,
+                                 horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
         self.progress = ft.ProgressBar(visible=False)
-        self.viewer = ft.Column(expand=True, spacing=0,
-                                horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
-                                controls=[self.toolbar, self.progress, self.content])
+        self.viewer = ft.Column(
+            expand=True, spacing=0, horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
+            controls=[self.toolbar, self.progress,
+                      ft.Container(self.content, expand=True, padding=ft.Padding.all(16)),
+                      self.transport],
+        )
+        # Follow-along: what the highlight is drawn on in the current view
+        self._sheet_pages: list[dict] = []  # per page: highlight, size, boxes, offset
+        self._chart_cells: dict[str, tuple[ft.Container, str, object]] = {}  # bar id -> (cell, row key, bg)
+        self._content_heights: dict[int, float] = {}
+        self._highlighted: str | None = None
+        self._scrolled_to: tuple | None = None
 
         self.divider = ft.VerticalDivider(width=1)
         p.add(ft.Row(expand=True, spacing=0, vertical_alignment=ft.CrossAxisAlignment.STRETCH,
@@ -295,6 +375,7 @@ class ChordView:
             return
         self.state.render_token += 1
         token = self.state.render_token
+        self.stop_playback()  # the music on screen is about to change
         self.progress.visible = True
         self.update_header()
         self.page.update()
@@ -308,7 +389,8 @@ class ChordView:
                 eng = self.engraver.load(xml, transpose=shift, zoom=zoom, page_width=page_width)
                 bars = chart_from_mei(eng.mei)
                 pages = [self.engraver.render_page(i, ink=ink) for i in range(1, eng.pages + 1)]
-                return Rendered(song, pages, bars, shift, page_width)
+                return Rendered(song, pages, bars, shift, page_width, timeline=eng.timeline,
+                                melody=eng.melody, tempos=eng.tempos)
             except Exception as exc:  # a bad file must not take the app down
                 return Rendered(song, [], [], shift, page_width, error=str(exc) or type(exc).__name__)
 
@@ -317,6 +399,7 @@ class ChordView:
             return  # a newer request superseded this one
         self.state.rendered = result
         self.progress.visible = False
+        self.play_button.disabled = not result.playable
         self.show_content()
         self.page.update()
 
@@ -375,7 +458,7 @@ class ChordView:
                             color=ft.Colors.ON_SURFACE_VARIANT,
                         ),
                         ft.Text(
-                            "Keys: / search · ↓ ↑ PgDn PgUp scroll · [ ] transpose · "
+                            "Keys: / search · P play · ↓ ↑ PgDn PgUp scroll · [ ] transpose · "
                             "S sheet · C chords · L library · D dark",
                             size=12,
                             color=ft.Colors.ON_SURFACE_VARIANT,
@@ -384,13 +467,16 @@ class ChordView:
                 ),
             )
         ]
-        self.title_text.value = "Chordview"
+        self.title_text.value = "TuneView"
         self.subtitle_text.value = "Leadsheets on your music stand"
 
     def show_content(self) -> None:
         r = self.state.rendered
         if r is None:
             return
+        self._sheet_pages, self._chart_cells, self._content_heights = [], {}, {}
+        self._highlighted, self._scrolled_to = None, None
+        self.transport.visible = True
         if r.error:
             self.content.controls = [self._notice(ft.Icons.ERROR_OUTLINE,
                                                   f"Couldn't engrave this leadsheet: {r.error}")]
@@ -398,6 +484,8 @@ class ChordView:
             self.content.controls = self._sheet(r)
         else:
             self.content.controls = self._chart(r)
+        for i, control in enumerate(self.content.controls):  # heights, for scrolling
+            control.on_size_change = lambda e, i=i: self._content_heights.__setitem__(i, e.height)
 
     def _notice(self, icon: ft.IconData, text: str) -> ft.Control:
         return ft.Container(
@@ -412,14 +500,26 @@ class ChordView:
         out: list[ft.Control] = []
         if not r.song.has_melody:
             out.append(self._notice(ft.Icons.INFO_OUTLINE, "This leadsheet has no written melody."))
-        for png in r.pages:
+        for page in r.pages:
+            highlight = ft.Container(
+                visible=False, left=0, top=0, width=0, height=0, border_radius=4,
+                bgcolor=ft.Colors.with_opacity(0.16, ft.Colors.PRIMARY),
+                border=ft.Border.all(1.5, ft.Colors.with_opacity(0.6, ft.Colors.PRIMARY)),
+            )
+            info = {"highlight": highlight, "boxes": page.boxes, "aspect": page.aspect,
+                    "width": 0.0, "index": len(out)}
+            stack = ft.Stack(
+                [ft.Image(src=page.png, fit=ft.BoxFit.FIT_WIDTH, gapless_playback=True), highlight],
+                on_size_change=lambda e, info=info: info.__setitem__("width", e.width),
+            )
+            self._sheet_pages.append(info)
             out.append(
                 ft.Container(
                     bgcolor=paper,
                     border_radius=6,
-                    padding=ft.Padding.symmetric(horizontal=8, vertical=12),
+                    padding=ft.Padding.symmetric(horizontal=8, vertical=SHEET_PAD),
                     shadow=ft.BoxShadow(blur_radius=8, color=ft.Colors.with_opacity(0.18, ft.Colors.BLACK)),
-                    content=ft.Image(src=png, fit=ft.BoxFit.FIT_WIDTH, gapless_playback=True),
+                    content=stack,
                 )
             )
         return out
@@ -441,14 +541,19 @@ class ChordView:
             line.append(bar)
             if bar.final or bar.double or bar.repeat_end:
                 lines.append([])
-        rows = []
-        for line in (ln for ln in lines if ln):
-            cells: list[ft.Control] = [self._bar_cell(b, size) for b in line]
+        rows: list[ft.Control] = []
+        for n, line in enumerate(ln for ln in lines if ln):
+            row_key = f"chart-row-{n}"
+            cells: list[ft.Control] = []
+            for b in line:
+                cell = self._bar_cell(b, size)
+                if b.id:
+                    self._chart_cells[b.id] = (cell, row_key, cell.bgcolor)
+                cells.append(cell)
             cells += [ft.Container(expand=1) for _ in range(per_line - len(line))]
             rows.append(ft.Row(cells, spacing=0, vertical_alignment=ft.CrossAxisAlignment.STRETCH,
-                               intrinsic_height=True))
-        return [ft.Container(padding=ft.Padding.symmetric(horizontal=8, vertical=8),
-                             content=ft.Column(rows, spacing=14))]
+                               intrinsic_height=True, key=ft.ScrollKey(row_key)))
+        return rows
 
     def _bar_cell(self, bar: ChartBar, size: float) -> ft.Control:
         line = ft.Colors.ON_SURFACE
@@ -558,6 +663,138 @@ class ChordView:
             spans.append(ft.TextSpan(f"/{bass}", ft.TextStyle(size=size * 0.8)))
         return ft.Text(root, size=size, weight=ft.FontWeight.W_700, spans=spans, no_wrap=True,
                        max_lines=1, overflow=ft.TextOverflow.VISIBLE)
+
+    # --------------------------------------------------------------- playback
+    def _swing_ratio(self, r: Rendered, notes) -> float:
+        if not r.song.time.endswith(("/4", "/2")):
+            return 0.5  # compound meters (6/8, 12/8) already move in threes
+        ratio = SWING.get(self.state.swing, 0.5)
+        if ratio is None:  # Auto: guess from the tune
+            ratio = SWING["Medium"] if should_swing(notes, r.song.time) else 0.5
+        return ratio
+
+    async def toggle_playback(self, e=None) -> None:
+        if self.player.playing:
+            self.stop_playback()
+            self.page.update()
+            return
+        r = self.state.rendered
+        if r is None or not r.playable or self.play_button.disabled:
+            return
+        # The score may be written for a transposing instrument; play what it
+        # sounds like: concert pitch plus the player's own transposition.
+        sounding = -(r.shift - self.state.shift)
+        mode, speed = self.state.play_mode, self.state.speed
+
+        def prepare():
+            tune = melody(r.melody, transpose=sounding)
+            notes = tune if mode in ("melody", "both") else []
+            if mode in ("both", "chords"):
+                bars = {b.id: b for b in r.bars}
+                notes = notes + accompaniment(r.timeline, bars, transpose=sounding)
+            tempo = tempo_map(r.tempos)
+            ratio = self._swing_ratio(r, tune)
+            performance = perform(notes, tempo, swing_ratio=ratio, speed=speed)
+            return synthesize(performance), bar_times(r.timeline, tempo, swing_ratio=ratio, speed=speed)
+
+        self.play_button.icon = ft.Icons.HOURGLASS_TOP
+        self.page.update()
+        pcm, times = await asyncio.to_thread(prepare)
+        if r is not self.state.rendered:
+            return  # the song or its settings changed while we were synthesizing
+        if not len(pcm):
+            self.play_button.icon = ft.Icons.PLAY_ARROW_ROUNDED
+            what = "melody" if mode == "melody" else "chords"
+            self.page.show_dialog(ft.SnackBar(ft.Text(f"This leadsheet has no {what} to play.")))
+            self.page.update()
+            return
+        try:
+            self.player.play(pcm)
+        except Exception as exc:  # no audio device, etc.
+            self.play_button.icon = ft.Icons.PLAY_ARROW_ROUNDED
+            self.page.show_dialog(ft.SnackBar(ft.Text(f"Can't play audio: {exc}")))
+            self.page.update()
+            return
+        self.play_button.icon = ft.Icons.STOP_ROUNDED
+        self.play_button.tooltip = "Stop (P)"
+        self.page.update()
+        self.page.run_task(self._follow_playback, times)
+
+    async def _follow_playback(self, times: list[tuple[float, str]]) -> None:
+        """While playing: tick the clock and progress, highlight the bar being played."""
+        starts = [t for t, _ in times]
+        while self.player.playing and self.player.position < self.player.length:
+            pos, length = self.player.position, self.player.length
+            self.time_text.value = f"{_mmss(pos)} / {_mmss(length)}"
+            self.play_progress.value = pos / length if length else 0
+            i = bisect.bisect_right(starts, pos) - 1
+            try:
+                if i >= 0:
+                    await self.highlight_bar(times[i][1])
+                self.page.update()
+            except Exception:  # the session went away (window or tab closed)
+                self.player.stop()
+                return
+            await asyncio.sleep(0.1)
+        if self.player.playing:  # reached the end (not stopped by the user)
+            self.stop_playback()
+            self.page.update()
+
+    async def highlight_bar(self, bar_id: str | None) -> None:
+        """Mark the bar being played and keep it in view, in either view."""
+        if bar_id == self._highlighted:
+            return
+        self._highlighted = bar_id
+        # Chord chart: tint the cell, scroll its line into view
+        for cell, _, bg in self._chart_cells.values():
+            cell.bgcolor = bg
+        if bar_id in self._chart_cells:
+            cell, row_key, _ = self._chart_cells[bar_id]
+            cell.bgcolor = ft.Colors.with_opacity(0.22, ft.Colors.PRIMARY)
+            if self._scrolled_to != row_key:
+                self._scrolled_to = row_key
+                await self.content.scroll_to(scroll_key=row_key, duration=300)
+        # Sheet: draw a box over the bar, scroll when it moves to a new system
+        for info in self._sheet_pages:
+            box = info["boxes"].get(bar_id) if bar_id else None
+            hl = info["highlight"]
+            if box is None or not info["width"]:
+                hl.visible = False
+                continue
+            w = info["width"]
+            h = w * info["aspect"]
+            left, top, right, bottom = box
+            staff = bottom - top
+            top_px = (top - staff * 1.6) * h  # include the chord symbols above
+            hl.left, hl.top = left * w - 4, top_px
+            hl.width, hl.height = (right - left) * w + 8, (bottom - top + staff * 2.2) * h
+            hl.visible = True
+            system = (info["index"], round(top, 3))
+            if self._scrolled_to != system:
+                self._scrolled_to = system
+                before = sum(self._content_heights.get(i, 0) for i in range(info["index"]))
+                offset = before + 16 * info["index"] + SHEET_PAD + top_px
+                await self.content.scroll_to(offset=max(0.0, offset - 40), duration=300)
+
+    def stop_playback(self) -> None:
+        self.player.stop()
+        self.play_button.icon = ft.Icons.PLAY_ARROW_ROUNDED
+        self.play_button.tooltip = "Play (P)"
+        self.time_text.value = "0:00"
+        self.play_progress.value = 0
+        for cell, _, bg in self._chart_cells.values():
+            cell.bgcolor = bg
+        for info in self._sheet_pages:
+            info["highlight"].visible = False
+        self._highlighted, self._scrolled_to = None, None
+
+    async def on_playback_setting(self, e) -> None:
+        self.state.play_mode = self.play_mode_dd.value or "melody"
+        self.state.swing = self.swing_dd.value or "Off"
+        self.state.speed = float(self.speed_dd.value or 1.0)
+        if self.player.playing:  # restart with the new settings
+            self.stop_playback()
+            await self.toggle_playback()
 
     # ---------------------------------------------------------------- actions
     async def on_mode(self, e) -> None:
@@ -674,8 +911,15 @@ class ChordView:
             self.toggle_library()
         elif key == "D":
             await self.toggle_theme()
+        elif key == "P":
+            await self.toggle_playback()
         elif key == "F11":
             self.toggle_fullscreen()
+
+
+def _mmss(seconds: float) -> str:
+    m, s = divmod(int(seconds), 60)
+    return f"{m}:{s:02d}"
 
 
 async def main(page: ft.Page) -> None:
@@ -687,20 +931,20 @@ async def main(page: ft.Page) -> None:
                 content=ft.Text(
                     f"No leadsheet library at {library.path}.\n\n"
                     "Build it from a folder of MusicXML files:\n"
-                    "    uv run chordview-import /path/to/musicxml",
+                    "    uv run tuneview-import /path/to/musicxml",
                     selectable=True,
                     size=16,
                 ),
             )
         )
         return
-    ChordView(page, library)
+    TuneView(page, library)
     page.update()
 
 
 def run() -> None:
-    view = ft.AppView.WEB_BROWSER if os.environ.get("CHORDVIEW_WEB") else ft.AppView.FLET_APP
-    ft.run(main, view=view, port=int(os.environ.get("CHORDVIEW_PORT", 0)))
+    view = ft.AppView.WEB_BROWSER if os.environ.get("TUNEVIEW_WEB") else ft.AppView.FLET_APP
+    ft.run(main, view=view, port=int(os.environ.get("TUNEVIEW_PORT", 0)))
 
 
 if __name__ == "__main__":

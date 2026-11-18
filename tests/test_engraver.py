@@ -1,7 +1,7 @@
 import pytest
 
-from chordview.app import transpose_key
-from chordview.engraver import (
+from tuneview.app import transpose_key
+from tuneview.engraver import (
     Engraver,
     chart_from_mei,
     fix_harmony_offsets,
@@ -37,10 +37,31 @@ def test_transposition_applies_to_chords(engraver, mini_xml):
     assert [c.text for c in bars[1].chords] == ["C7", "D7/F♯"]
 
 
-def test_render_page_returns_png(engraver, mini_xml):
-    engraver.load(mini_xml)
-    png = engraver.render_page(1, width_px=400, ink="#ffffff")
-    assert png.startswith(b"\x89PNG")
+def test_render_page_returns_png_and_bar_boxes(engraver, mini_xml):
+    eng = engraver.load(mini_xml)
+    page = engraver.render_page(1, width_px=400, ink="#ffffff")
+    assert page.png.startswith(b"\x89PNG")
+    assert 0.1 < page.aspect < 2
+    bar_ids = [b.id for b in chart_from_mei(eng.mei)]
+    assert set(page.boxes) == set(bar_ids)
+    boxes = [page.boxes[i] for i in bar_ids]
+    for left, top, right, bottom in boxes:
+        assert 0 <= left < right <= 1 and 0 <= top < bottom <= 1
+    assert boxes[0][2] <= boxes[1][0] + 1e-6  # bar 2 starts where bar 1 ends
+
+
+def test_timeline_plays_repeats_and_endings(engraver, mini_xml):
+    eng = engraver.load(mini_xml)
+    number = {b.id: b.number for b in chart_from_mei(eng.mei)}
+    assert [number[i] for i, _ in eng.timeline] == ["1", "2", "3", "1", "2", "4"]
+    assert [q for _, q in eng.timeline] == [0, 4, 8, 12, 16, 20]
+
+
+def test_melody_from_timemap(engraver, mini_xml):
+    eng = engraver.load(mini_xml)
+    assert eng.melody == [(0, 2, 69), (2, 4, 65), (8, 12, 67), (12, 14, 69), (14, 16, 65), (20, 24, 65)]
+    assert eng.tempos == [(0.0, 120.0)]
+    assert engraver.load(mini_xml, transpose=2).melody[0] == (0, 2, 71)
 
 
 def test_load_rejects_garbage(engraver):
