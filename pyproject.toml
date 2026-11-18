@@ -1,24 +1,31 @@
-[tool.poetry]
+[project]
 name = "chordview"
 version = "0.1.1"
 description = "Visualizing chords on the tone cycle"
-authors = ["Flávio Codeço Coelho <fccoelho@gmail.com>"]
+authors = [{ name = "Flávio Codeço Coelho", email = "fccoelho@gmail.com" }]
 license = "MIT"
-include = [{ path = "tests", format = "sdist" }]
+readme = "README.md"
+requires-python = ">3.11,<3.13"
+dependencies = [
+    "musicir>=0.0.6,<0.0.7",
+    # The app is written against the flet 0.26 API (page.dialog, Colors/Icons enums).
+    # The extras are required: flet otherwise pip-installs its runtime on first
+    # launch, and uv environments have no pip.
+    "flet[desktop,web]>=0.26,<0.27",
+    "SQLAlchemy>=1.4,<2",
+    "duckdb",
+]
 
-[tool.poetry.dependencies]
-python = ">3.11,<3.13"
-musicir = "^0.0.6"
-flet = "*"
-SQLAlchemy = "*"
-duckdb = "*"
+[dependency-groups]
+dev = [
+    "pytest>=7.1.3,<8",
+    "mypy>=0.971,<0.972",
+    "nox>=2022.8.7,<2023",
+    "black>=22.8.0,<23",
+]
 
-[tool.poetry.group.dev.dependencies]
-pytest = "^7.1.3"
-mypy = "^0.971"
-nox = "^2022.8.7"
-black = "^22.8.0"
-
-[build-system]
-requires = ["poetry-core>=1.0.0"]
-build-backend = "poetry.core.masonry.api"
+[tool.uv]
+# chordview is an app run from src/, not an installable package.
+package = false
+# flet-web 0.26 passes `openapi_prefix` to FastAPI, which newer FastAPI rejects.
+constraint-dependencies = ["fastapi<0.112"]
