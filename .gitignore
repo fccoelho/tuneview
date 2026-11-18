@@ -159,3 +159,6 @@ cython_debug/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 .idea/
 .aider*
+
+# Leadsheet library: rebuilt locally with `uv run chordview-import <folder>`
+leadsheets.sqlite
