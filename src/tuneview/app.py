@@ -3,13 +3,21 @@
 from __future__ import annotations
 
 import asyncio
+import atexit
 import bisect
+import hashlib
 import os
+import shutil
+import socket
+import tempfile
+import time
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import flet as ft
+import flet_audio as fta
 
 from .engraver import (
     CHORD_STYLES,
@@ -34,6 +42,7 @@ from .lyrics import (
 )
 from .player import (
     PLAY_MODES,
+    SAMPLE_RATE,
     SWING,
     Player,
     accompaniment,
@@ -43,6 +52,7 @@ from .player import (
     should_swing,
     synthesize,
     tempo_map,
+    wav_bytes,
 )
 from .scales import Mark, ScaleGuide, scale_guides, scale_marks
 
@@ -53,6 +63,36 @@ SIDEBAR_WIDTH = 330
 SHEET_PAD = 12  # vertical padding around each engraved page
 NARROW = 900  # below this width the library and the music take turns
 SEED_COLOR = "#3f51b5"
+
+# The web server serves these files to the browser; audio is written here on play.
+_WEB_ASSETS: Path | None = None
+
+
+def _web_assets() -> Path:
+    """A temporary asset directory, served by the web version to the browser."""
+    global _WEB_ASSETS
+    if _WEB_ASSETS is None:
+        _WEB_ASSETS = Path(tempfile.mkdtemp(prefix="tuneview-web-"))
+        (_WEB_ASSETS / "audio").mkdir(parents=True, exist_ok=True)
+        atexit.register(shutil.rmtree, _WEB_ASSETS, ignore_errors=True)
+    return _WEB_ASSETS
+
+
+def _audio_asset(pcm) -> str:
+    """Write PCM as a WAV asset and return the URL path the browser should fetch."""
+    data = wav_bytes(pcm)
+    name = hashlib.sha1(data).hexdigest()[:20] + ".wav"
+    path = _web_assets() / "audio" / name
+    if not path.exists():  # content-addressed, so the same tune reuses the file
+        fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".wav")
+        try:
+            with os.fdopen(fd, "wb") as file:
+                file.write(data)
+            os.replace(tmp, path)  # browsers/clients may race to write the same tune
+        finally:
+            Path(tmp).unlink(missing_ok=True)
+    return f"audio/{name}"
+
 
 MAJOR = ["C", "D♭", "D", "E♭", "E", "F", "G♭", "G", "A♭", "A", "B♭", "B"]
 MINOR = ["C", "C♯", "D", "E♭", "E", "F", "F♯", "G", "G♯", "A", "B♭", "B"]
@@ -113,12 +153,129 @@ class State:
         return normalize_shift(INSTRUMENTS[self.instrument] + self.shift)
 
 
+class BrowserAudio:
+    """Plays the synthesized tune in the browser, with a follow-along clock.
+
+    The web version runs on one computer but may be opened from others, so the
+    PCM is written as a WAV asset and fetched and played by each browser: every
+    listener hears the tune locally instead of on the machine running TuneView.
+    Position events from the client keep the bar highlight in step with the
+    sound that is actually playing.
+    """
+
+    def __init__(self, page: ft.Page, on_finished: Callable[[], None]):
+        self.page = page
+        self._on_finished = on_finished
+        self._audio: fta.Audio | None = None
+        self._length = 0.0
+        self._anchor = 0.0
+        self._anchor_time = time.monotonic()
+        self._playing = False
+        self._paused = False
+        self._closing = False
+
+    @property
+    def playing(self) -> bool:
+        return self._playing
+
+    @property
+    def paused(self) -> bool:
+        return self._paused
+
+    @property
+    def length(self) -> float:
+        return self._length
+
+    @property
+    def position(self) -> float:
+        if not self._playing:
+            return 0.0
+        if self._paused:
+            return self._anchor
+        return min(self._anchor + time.monotonic() - self._anchor_time, self._length)
+
+    def _sync(self, seconds: float) -> None:
+        self._anchor = max(0.0, seconds)
+        self._anchor_time = time.monotonic()
+
+    def _on_position(self, e) -> None:
+        self._sync(e.position / 1000)  # the client reports milliseconds
+
+    def _on_state(self, e) -> None:
+        if e.state == fta.AudioState.COMPLETED and not self._closing:
+            self._playing = False
+            self._paused = False
+            self._on_finished()
+
+    async def play(self, url: str, length: float) -> None:
+        self._length = length
+        self._playing = True
+        self._paused = False
+        self._closing = False
+        self._sync(0.0)
+        if self._audio is None:
+            self._audio = fta.Audio(src=url, on_position_change=self._on_position,
+                                    on_state_change=self._on_state)
+            self.page.services.append(self._audio)
+        else:
+            self._audio.src = url
+        self.page.update()
+        await self._audio.play()
+
+    async def pause(self) -> None:
+        if not self._playing or self._paused:
+            return
+        self._sync(self.position)
+        self._paused = True
+        if self._audio is not None:
+            await self._audio.pause()
+        self.page.update()
+
+    async def resume(self) -> None:
+        if not self._playing or not self._paused:
+            return
+        self._paused = False
+        self._anchor_time = time.monotonic()
+        if self._audio is not None:
+            await self._audio.resume()
+        self.page.update()
+
+    async def close(self) -> None:
+        self._closing = True
+        self._playing = False
+        self._paused = False
+        audio, self._audio = self._audio, None
+        if audio is not None:
+            try:
+                await audio.pause()  # stop the sound before releasing the player
+            except Exception:
+                pass
+            try:
+                await audio.release()
+            except Exception:
+                pass
+            if audio in self.page.services:
+                self.page.services.remove(audio)
+        try:
+            self.page.update()
+        except Exception:  # the page/session went away
+            pass
+
+    def abandon(self) -> None:
+        """The browser session is gone: it already stopped, so just forget it."""
+        self._closing = True
+        self._playing = False
+        self._paused = False
+        self._audio = None
+
+
 class TuneView:
     def __init__(self, page: ft.Page, library: Library):
         self.page = page
         self.library = library
         self.engraver = Engraver()
         self.player = Player()
+        self._browser: BrowserAudio | None = None
         self.state = State(songs=library.songs())
         self._alignment: dict | None = None  # state of the open lyrics-alignment editor
         self._build()
@@ -136,8 +293,8 @@ class TuneView:
         p.on_platform_brightness_change = self.on_theme_changed
         p.on_resize = self.on_resize
         # The sound is made in this process: stop it when the window or tab goes away.
-        p.on_disconnect = lambda e: self.player.stop()
-        p.on_close = lambda e: self.player.stop()
+        p.on_disconnect = lambda e: self._shutdown_playback()
+        p.on_close = lambda e: self._shutdown_playback()
 
         # Library -----------------------------------------------------------
         self.search_field = ft.TextField(
@@ -1076,8 +1233,43 @@ class TuneView:
             ratio = SWING["Medium"] if should_swing(notes, r.song.time) else 0.5
         return ratio
 
+    def _is_playing(self) -> bool:
+        if self._browser is not None:
+            return self._browser.playing
+        return self.player.playing
+
+    def _is_paused(self) -> bool:
+        if self._browser is not None:
+            return self._browser.paused
+        return self.player.paused
+
+    def _playback_position(self) -> float:
+        if self._browser is not None:
+            return self._browser.position
+        return self.player.position
+
+    def _playback_length(self) -> float:
+        if self._browser is not None:
+            return self._browser.length
+        return self.player.length
+
+    def _finish_playback(self) -> None:
+        """The browser finished the tune: reset the transport and the highlight."""
+        self.stop_playback()
+        try:
+            self.page.update()
+        except Exception:  # the page went away
+            pass
+
+    def _shutdown_playback(self) -> None:
+        """The window/tab is going away: stop the device and forget the browser player."""
+        self.player.stop()
+        if self._browser is not None:
+            self._browser.abandon()
+            self._browser = None
+
     async def toggle_playback(self, e=None) -> None:
-        if self.player.playing:
+        if self._is_playing():
             self.stop_playback()
             self.page.update()
             return
@@ -1112,8 +1304,17 @@ class TuneView:
             self.page.update()
             return
         try:
-            self.player.play(pcm)
-        except Exception as exc:  # no audio device, etc.
+            if self.page.web:  # each browser hears it locally; the host stays silent
+                url = _audio_asset(pcm)
+                browser = BrowserAudio(self.page, on_finished=self._finish_playback)
+                self._browser = browser
+                await browser.play(url, len(pcm) / SAMPLE_RATE)
+                if self._browser is not browser:  # stopped while the browser was starting
+                    return
+            else:
+                self.player.play(pcm)
+        except Exception as exc:  # no audio device, bad source, etc.
+            self.stop_playback()
             self.play_button.icon = ft.Icons.PLAY_ARROW_ROUNDED
             self.page.show_dialog(ft.SnackBar(ft.Text(f"Can't play audio: {exc}")))
             self.page.update()
@@ -1126,10 +1327,10 @@ class TuneView:
     async def _follow_playback(self, times: list[tuple[float, str]]) -> None:
         """While playing: tick the clock and progress, highlight the bar being played."""
         starts = [t for t, _ in times]
-        while self.player.playing and self.player.position < self.player.length:
-            pos, length = self.player.position, self.player.length
+        while self._is_playing() and self._playback_position() < self._playback_length():
+            pos, length = self._playback_position(), self._playback_length()
             self.time_text.value = f"{_mmss(pos)} / {_mmss(length)}"
-            if self.player.paused:
+            if self._is_paused():
                 self.time_text.value = f"Paused {_mmss(pos)}"
             self.play_progress.value = pos / length if length else 0
             i = bisect.bisect_right(starts, pos) - 1
@@ -1138,10 +1339,10 @@ class TuneView:
                     await self.highlight_bar(times[i][1])
                 self.page.update()
             except Exception:  # the session went away (window or tab closed)
-                self.player.stop()
+                self.stop_playback()
                 return
             await asyncio.sleep(0.1)
-        if self.player.playing:  # reached the end (not stopped by the user)
+        if self._is_playing():  # reached the end (not stopped by the user)
             self.stop_playback()
             self.page.update()
 
@@ -1182,15 +1383,26 @@ class TuneView:
                 offset = before + 16 * info["index"] + SHEET_PAD + top_px
                 await self.content.scroll_to(offset=max(0.0, offset - 40), duration=300)
 
-    def toggle_pause(self) -> None:
+    async def toggle_pause(self) -> None:
         """Pause or resume what's playing; the bar stays highlighted while paused."""
-        if self.player.paused:
+        if self._browser is not None:
+            if self._browser.paused:
+                await self._browser.resume()
+            else:
+                await self._browser.pause()
+        elif self.player.paused:
             self.player.resume()
         else:
             self.player.pause()
         self.page.update()
 
     def stop_playback(self) -> None:
+        browser, self._browser = self._browser, None
+        if browser is not None:
+            try:
+                self.page.run_task(browser.close)  # a coroutine function, not a coroutine
+            except Exception:  # the page is gone
+                browser.abandon()
         self.player.stop()
         self.play_button.icon = ft.Icons.PLAY_ARROW_ROUNDED
         self.play_button.tooltip = "Play (P)"
@@ -1251,7 +1463,7 @@ class TuneView:
         self.state.play_mode = self.play_mode_dd.value or "melody"
         self.state.swing = self.swing_dd.value or "Off"
         self.state.speed = float(self.speed_dd.value or 1.0)
-        if self.player.playing:  # restart with the new settings
+        if self._is_playing():  # restart with the new settings
             self.stop_playback()
             await self.toggle_playback()
 
@@ -1354,8 +1566,8 @@ class TuneView:
                 self.populate_list(self.state.songs)
                 self.page.update()
             return
-        if key == " " and self.player.playing:  # Space pauses and resumes playback
-            self.toggle_pause()
+        if key == " " and self._is_playing():  # Space pauses and resumes playback
+            await self.toggle_pause()
         elif key in ("Arrow Down", "Page Down", " "):  # page-turner pedals send these
             await self.scroll_by(0.85 if key != "Arrow Down" else 0.3)
         elif key in ("Arrow Up", "Page Up"):
@@ -1417,9 +1629,50 @@ async def main(page: ft.Page) -> None:
     page.update()
 
 
+def _lan_address() -> str:
+    """This machine's address on the local network, or '' if it can't be found."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect(("8.8.8.8", 80))  # a route lookup; no packet is sent
+            return sock.getsockname()[0]
+    except OSError:
+        pass
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            ip = info[4][0]
+            if not ip.startswith(("127.", "169.254.")):
+                return ip
+    except OSError:
+        pass
+    return ""
+
+
+def _web_port() -> int:
+    """The port to serve on: FLET_SERVER_PORT/TUNEVIEW_PORT, else a free one."""
+    for name in ("FLET_SERVER_PORT", "TUNEVIEW_PORT"):
+        value = (os.environ.get(name) or "").strip()
+        if value.isdigit() and int(value) > 0:
+            return int(value)
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("0.0.0.0", 0))
+        return sock.getsockname()[1]
+
+
+def _announce_web(port: int) -> None:
+    """Print the addresses to open, including the local-network address."""
+    print(f"TuneView web server: http://127.0.0.1:{port}/", flush=True)
+    if lan := _lan_address():
+        print(f"  from another computer on the local network: http://{lan}:{port}/", flush=True)
+
+
 def run() -> None:
-    view = ft.AppView.WEB_BROWSER if os.environ.get("TUNEVIEW_WEB") else ft.AppView.FLET_APP
-    ft.run(main, view=view, port=int(os.environ.get("TUNEVIEW_PORT", 0)))
+    if os.environ.get("TUNEVIEW_WEB"):
+        port = _web_port()
+        os.environ["FLET_SERVER_PORT"] = str(port)  # Flet reads this first: same address
+        _announce_web(port)
+        ft.run(main, view=ft.AppView.WEB_BROWSER, port=port, assets_dir=str(_web_assets()))
+    else:
+        ft.run(main, view=ft.AppView.FLET_APP, port=int(os.environ.get("TUNEVIEW_PORT", 0)))
 
 
 if __name__ == "__main__":

@@ -1,4 +1,6 @@
+import io
 import time
+import wave
 
 import numpy as np
 import pytest
@@ -20,6 +22,7 @@ from tuneview.player import (
     synthesize,
     tempo_map,
     voice_chord,
+    wav_bytes,
 )
 
 
@@ -158,3 +161,13 @@ def test_player_pause_holds_the_position(monkeypatch):
     player.pause()
     player.stop()
     assert not player.playing and not player.paused
+
+
+def test_wav_bytes_encodes_mono_int16():
+    pcm = np.array([0, 1000, -1000, 500], dtype=np.int16)
+    with wave.open(io.BytesIO(wav_bytes(pcm)), "rb") as wav:
+        assert wav.getnchannels() == 1
+        assert wav.getsampwidth() == 2
+        assert wav.getframerate() == SAMPLE_RATE
+        assert wav.getnframes() == len(pcm)
+        assert wav.readframes(len(pcm)) == pcm.astype("<i2").tobytes()

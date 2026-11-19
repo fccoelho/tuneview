@@ -86,6 +86,15 @@ TUNEVIEW_WEB=1 uv run tuneview    # in the browser instead
 uv run pytest                     # tests
 ```
 
+In the browser, TuneView prints the address to open on this computer and, when
+the machine is on a network, the address to use from another computer on the
+local network (the web server listens on all interfaces). Set `TUNEVIEW_PORT`
+to choose the port if you need a fixed one.
+
+Playback in the browser is played by the browser that opened the tune, so every
+computer hears it through its own speakers and the machine running TuneView
+stays silent.
+
 ## Keyboard
 
 | Key | Action |

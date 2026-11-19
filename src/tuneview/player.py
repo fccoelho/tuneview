@@ -5,17 +5,19 @@ from the chart, bar starts from Verovio's timemap), then the same swing warp,
 tempo map and speed turn it into seconds — so the sound and the bar highlight
 can never drift apart.
 
-The sound is made in Python and played with miniaudio, which bundles its own audio
-backend, so it works with Flet's desktop client (whose Linux build has no audio
-plugin). In web mode the sound plays on the machine running TuneView.
+The sound is made in Python. The desktop client plays it with miniaudio, which
+bundles its own audio backend, because Flet's Linux desktop build has no audio
+plugin; the web version sends the PCM to the browser and plays it there.
 """
 
 from __future__ import annotations
 
 import bisect
+import io
 import os
 import re
 import threading
+import wave
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -300,6 +302,17 @@ def synthesize(notes: list[Note], *, speed: float = 1.0, sr: int = SAMPLE_RATE) 
 
     peak = float(np.max(np.abs(out))) or 1.0
     return (out / peak * 0.6 * 32767).astype(np.int16)
+
+
+def wav_bytes(pcm: np.ndarray, sr: int = SAMPLE_RATE) -> bytes:
+    """Encode mono int16 PCM as a WAV file, for the browser to play."""
+    out = io.BytesIO()
+    with wave.open(out, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(sr)
+        wav.writeframes(pcm.astype("<i2", copy=False).tobytes())
+    return out.getvalue()
 
 
 # ----------------------------------------------------------------------------

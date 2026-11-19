@@ -17,6 +17,8 @@ dependencies = [
     # Playback: synthesize the melody and accompaniment, play them.
     "miniaudio>=1.73",
     "numpy>=2.0",
+    # Plays the synthesized tune in the browser in the web version.
+    "flet-audio>=1.1.2,<1.2",
 ]
 
 [project.scripts]

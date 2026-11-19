@@ -139,6 +139,18 @@ web = [
 ]
 
 [[package]]
+name = "flet-audio"
+version = "1.1.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "flet" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/49/fa/4db0b734bccfff0e9d74227ba6ed0e90b6fe13d8085f101d6805e08db146/flet_audio-1.1.2.tar.gz", hash = "sha256:bdbb9297d1ae29ad35f45681a8363d2ec1bb88669b8328d2438301ca3b48bbf1", size = 19114, upload-time = "2026-11-06T23:29:02.428Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d9/92/66fd9d072e48445dfc8b1f9c066b7feae861006ec48379cf56c3b6b3079b/flet_audio-1.1.2-py3-none-any.whl", hash = "sha256:8057ddf0791ad3668d9f824d968e09a351f9c0a839de20f8537706e5b84a970a", size = 20228, upload-time = "2026-11-06T23:29:01.567Z" },
+]
+
+[[package]]
 name = "flet-desktop"
 version = "1.1.2"
 source = { registry = "https://pypi.org/simple" }
@@ -637,6 +649,7 @@ version = "0.5.0"
 source = { editable = "." }
 dependencies = [
     { name = "flet", extra = ["desktop", "web"] },
+    { name = "flet-audio" },
     { name = "miniaudio" },
     { name = "numpy" },
     { name = "resvg-py" },
@@ -651,6 +664,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "flet", extras = ["desktop", "web"], specifier = ">=1.1.2,<1.2" },
+    { name = "flet-audio", specifier = ">=1.1.2,<1.2" },
     { name = "miniaudio", specifier = ">=1.73" },
     { name = "numpy", specifier = ">=2.0" },
     { name = "resvg-py", specifier = ">=0.2" },
