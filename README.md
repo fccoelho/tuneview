@@ -14,6 +14,9 @@ way you need to play it:
 - **Lyrics**: the words in large print. Add or edit them with the Lyrics
   view's button: paste or type them, with a blank line between verses; a line
   like `[Chorus]` or `Verse 2:` on top of a verse becomes its heading.
+
+  ![The Lyrics view: the words in large print](docs/screenshot-lyrics.png)
+
 - **Transposition** for B♭, E♭ and F instruments, plus any extra shift in
   semitones. The notation, the chord chart and the displayed key all follow it.
 - **Chord symbols**: Compact (the default) spells them the jazz way: `Cm7`,
@@ -33,6 +36,9 @@ way you need to play it:
   Lydian) and by where a dominant resolves (into a minor chord → Phrygian
   dominant). Accidentals outside the key signature are printed above their
   notes.
+
+  ![Improvisation scales drawn over the bar being played, with their names in the transport bar](docs/screenshot-scales.png)
+
 - Instant search across title and composer, light and dark themes, and keyboard
   control that works with page-turner pedals.
 
