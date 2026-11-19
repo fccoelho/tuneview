@@ -7,6 +7,7 @@ import bisect
 import os
 from collections import Counter
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import flet as ft
 
@@ -19,6 +20,13 @@ from .engraver import (
     chart_from_mei,
     normalize_shift,
     split_chord,
+)
+from .importer import (
+    SCORE_EXTENSIONS,
+    ImportResult,
+    find_scores,
+    import_files,
+    import_paths,
 )
 from .library import Library, SongInfo, search
 from .lyrics import verses
@@ -141,6 +149,21 @@ class TuneView:
             on_submit=self.on_search_submit,
         )
         self.count_text = ft.Text(size=12, color=ft.Colors.ON_SURFACE_VARIANT)
+        self.file_picker = ft.FilePicker()  # a service: registers itself with the page
+        add_tip = "Add MusicXML files (.musicxml, .xml, .mxl) to the library"
+        if p.web:  # browsers can't pick folders
+            self.add_button = ft.IconButton(ft.Icons.LIBRARY_ADD_OUTLINED, tooltip=add_tip,
+                                            on_click=self.add_files)
+        else:
+            self.add_button = ft.PopupMenuButton(
+                icon=ft.Icons.LIBRARY_ADD_OUTLINED, tooltip=add_tip,
+                items=[
+                    ft.PopupMenuItem(content=ft.Text("Add files…"), icon=ft.Icons.NOTE_ADD_OUTLINED,
+                                     on_click=self.add_files),
+                    ft.PopupMenuItem(content=ft.Text("Add a folder…"),
+                                     icon=ft.Icons.CREATE_NEW_FOLDER_OUTLINED, on_click=self.add_folder),
+                ],
+            )
         self.song_list = ft.ListView(expand=True, spacing=0, padding=ft.Padding.only(bottom=12))
         self.sidebar = ft.Container(
             width=SIDEBAR_WIDTH,
@@ -153,7 +176,8 @@ class TuneView:
                     ft.Row(
                         [
                             ft.Icon(ft.Icons.QUEUE_MUSIC, color=ft.Colors.PRIMARY, size=28),
-                            ft.Text("TuneView", size=22, weight=ft.FontWeight.W_600),
+                            ft.Text("TuneView", size=22, weight=ft.FontWeight.W_600, expand=True),
+                            self.add_button,
                         ],
                         spacing=10,
                     ),
@@ -364,6 +388,59 @@ class TuneView:
         n = len(songs)
         self.count_text.value = f"{n} tune{'s' if n != 1 else ''}"
 
+    # ------------------------------------------------------- adding to library
+    async def add_files(self, e=None) -> None:
+        files = await self.file_picker.pick_files(
+            dialog_title="Add MusicXML files to the library",
+            file_type=ft.FilePickerFileType.CUSTOM,
+            allowed_extensions=[x.lstrip(".") for x in SCORE_EXTENSIONS],
+            allow_multiple=True, with_data=True,
+        )
+        if not files:
+            return
+
+        def job() -> ImportResult:
+            picked = []
+            for f in files:
+                data = f.bytes
+                if data is None and f.path:  # desktop may hand over the path only
+                    data = Path(f.path).read_bytes()
+                if data is not None:
+                    picked.append((f.name, data))
+            return import_files(picked, self.library)
+
+        await self._import(job)
+
+    async def add_folder(self, e=None) -> None:
+        folder = await self.file_picker.get_directory_path(
+            dialog_title="Add a folder of MusicXML files (sub-folders included)")
+        if not folder:
+            return
+        root = Path(folder)
+        await self._import(lambda: import_paths(find_scores(root), self.library, root=root))
+
+    async def _import(self, job) -> None:
+        """Run an import off the UI thread, then refresh the library and report."""
+        self.progress.visible = True
+        self.page.update()
+        try:
+            result = await asyncio.to_thread(job)
+        except Exception as exc:  # e.g. an unreadable folder: report, don't crash
+            result = ImportResult(errors=[str(exc) or type(exc).__name__])
+        self.progress.visible = False
+        self.state.songs = self.library.songs()
+        self.populate_list(search(self.state.songs, self.search_field.value or ""))
+        message = result.summary()
+        if result.errors:
+            message += f" {result.errors[0]}" + (" …" if len(result.errors) > 1 else "")
+        self.page.show_dialog(ft.SnackBar(ft.Text(message), duration=6000))
+        added = [s for s in self.state.songs if s.id in result.added]
+        if len(added) == 1:
+            await self.open_song(added[0])  # one new tune: show it
+        elif self.state.current is None:
+            self.show_welcome()
+        self.page.update()
+
     def on_search(self, e: ft.Event[ft.TextField]) -> None:
         self.populate_list(search(self.state.songs, self.search_field.value or ""))
         self.page.update()
@@ -477,11 +554,16 @@ class TuneView:
                     spacing=12,
                     controls=[
                         ft.Icon(ft.Icons.PIANO, size=72, color=ft.Colors.PRIMARY),
-                        ft.Text("Pick a tune from the library", size=24, weight=ft.FontWeight.W_500),
+                        ft.Text("Pick a tune from the library" if self.state.songs else
+                                "Your library is empty", size=24, weight=ft.FontWeight.W_500),
+                        ft.Text("Add MusicXML leadsheets with the add button above the "
+                                "library (.musicxml, .xml or .mxl).",
+                                color=ft.Colors.ON_SURFACE_VARIANT, visible=not self.state.songs),
                         ft.Text(
                             f"{len(self.state.songs)} leadsheets · melody, chords and lyrics, "
                             "transposed for your instrument",
                             color=ft.Colors.ON_SURFACE_VARIANT,
+                            visible=bool(self.state.songs),
                         ),
                         ft.Text(
                             "Keys: / search · P play · Space pause · ↓ ↑ PgDn PgUp scroll · [ ] transpose · "
@@ -1083,13 +1165,15 @@ def _mmss(seconds: float) -> str:
 
 async def main(page: ft.Page) -> None:
     library = Library()
+    if library.is_new():  # first run: start with an empty library to add music to
+        library.create()
     if not library.is_ready():
         page.add(
             ft.Container(
                 padding=40,
                 content=ft.Text(
-                    f"No leadsheet library at {library.path}.\n\n"
-                    "Build it from a folder of MusicXML files:\n"
+                    f"{library.path} was made by a different version of TuneView.\n\n"
+                    "Rebuild it from your folder of MusicXML files:\n"
                     "    uv run tuneview-import /path/to/musicxml",
                     selectable=True,
                     size=16,

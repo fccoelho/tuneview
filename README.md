@@ -49,18 +49,23 @@ uv sync
 
 ### Build the library
 
-TuneView reads MusicXML leadsheets (`.xml` / `.musicxml`) into a single SQLite
-file, `leadsheets.sqlite` at the project root (override with `TUNEVIEW_DB`):
+TuneView keeps MusicXML leadsheets (`.musicxml`, `.xml` or compressed `.mxl`)
+in a single SQLite file, `leadsheets.sqlite` at the project root (override with
+`TUNEVIEW_DB`). It's created empty the first time you run TuneView.
+
+Add music from the app with the add button above the library: pick files, or
+(on the desktop) a whole folder. Or import a folder from the command line:
 
 ```bash
 uv run tuneview-import /path/to/musicxml    # searched recursively
 ```
 
-Identical files are imported once, and each sub-folder name becomes the tune's
-volume (e.g. `I`, `II`). Running the import again adds any new files.
+Identical files are added once, so adding a folder again only picks up new
+files. When adding a folder, each sub-folder name becomes the tune's volume
+(e.g. `I`, `II`).
 
 Lyrics you add in TuneView are saved in the same file, so back it up rather
-than deleting it to rebuild: running the import again keeps them.
+than deleting it to rebuild: adding music again keeps them.
 
 ## Run
 

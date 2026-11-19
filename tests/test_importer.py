@@ -1,6 +1,14 @@
 import pytest
 
-from tuneview.importer import import_folder, key_name, parse_metadata, split_composer
+from tuneview.importer import (
+    ImportResult,
+    import_files,
+    import_folder,
+    key_name,
+    parse_metadata,
+    split_composer,
+    unpack_mxl,
+)
 from tuneview.library import Library
 
 
@@ -68,3 +76,44 @@ def test_import_folder_dedupes_and_reports_errors(tmp_path, mini_path):
     [song] = lib.songs()
     assert song.collection == "I"
     assert lib.musicxml(song.id) == data.decode()
+
+
+def mxl(score: bytes, container: bool = True, namespaced: bool = False) -> bytes:
+    """A compressed MusicXML (.mxl) archive holding score."""
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        if container:
+            ns = ' xmlns="urn:oasis:names:tc:opendocument:xmlns:container"' if namespaced else ""
+            z.writestr("META-INF/container.xml",
+                       f'<container{ns}><rootfiles><rootfile full-path="score/tune.musicxml"/>'
+                       "</rootfiles></container>")
+        z.writestr("score/tune.musicxml", score)
+    return buf.getvalue()
+
+
+def test_unpack_mxl(mini_path):
+    data = mini_path.read_bytes()
+    assert unpack_mxl(mxl(data)) == data
+    assert unpack_mxl(mxl(data, namespaced=True)) == data
+    assert unpack_mxl(mxl(data, container=False)) == data
+    with pytest.raises(ValueError):
+        unpack_mxl(b"not a zip")
+
+
+def test_import_files_from_the_app(tmp_path, mini_path):
+    data = mini_path.read_bytes()
+    lib = Library(tmp_path / "new.sqlite")  # a brand-new file
+    assert lib.is_new()
+    result = import_files([("Tune.mxl", mxl(data)), ("again.musicxml", data),
+                           ("notes.txt.xml", b"<html/>"), ("bad.mxl", b"zip?")], lib)
+    assert lib.is_ready() and not lib.is_new()
+    [song] = lib.songs()
+    assert result.added == [song.id] and result.duplicates == 1  # the .mxl's score, once
+    assert [e.split(":")[0] for e in result.errors] == ["notes.txt.xml", "bad.mxl"]
+    assert lib.musicxml(song.id) == data.decode()
+    assert result.summary() == "Added 1 tune (1 already in the library, 2 couldn't be read)."
+    assert ImportResult(added=[1, 2]).summary() == "Added 2 tunes."
+    assert ImportResult().summary() == "Added 0 tunes."

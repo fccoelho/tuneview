@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import functools
 import os
 import sqlite3
+import threading
 import unicodedata
 import zlib
 from dataclasses import dataclass
@@ -83,10 +85,20 @@ _INFO_COLUMNS = (
 )
 
 
+def _locked(method):
+    """One thread at a time on the connection (the app imports and renders off its UI thread)."""
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+    return wrapper
+
+
 class Library:
     def __init__(self, path: Path | str | None = None):
         self.path = Path(path) if path else default_db_path()
         self.conn = sqlite3.connect(self.path, check_same_thread=False)
+        self._lock = threading.RLock()
         if self._version() == 2:  # add the lyrics table; nothing else changed
             self.conn.executescript(SCHEMA)
             self.conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
@@ -96,6 +108,7 @@ class Library:
         return self.conn.execute("PRAGMA user_version").fetchone()[0]
 
     # -- writing -----------------------------------------------------------
+    @_locked
     def create(self) -> None:
         version = self._version()
         if version not in (0, SCHEMA_VERSION):
@@ -110,6 +123,7 @@ class Library:
         self.conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         self.conn.commit()
 
+    @_locked
     def add(self, meta: dict, musicxml: bytes, sha1: str) -> bool:
         """Insert a song; returns False if identical MusicXML is already present."""
         cur = self.conn.execute(
@@ -122,13 +136,21 @@ class Library:
         )
         return cur.rowcount == 1
 
+    @_locked
     def commit(self) -> None:
         self.conn.commit()
 
     # -- reading -----------------------------------------------------------
+    @_locked
     def is_ready(self) -> bool:
         return self._version() == SCHEMA_VERSION
 
+    @_locked
+    def is_new(self) -> bool:
+        """No tables at all: a library file that was just created (or left empty)."""
+        return self.conn.execute("SELECT count(*) FROM sqlite_master").fetchone()[0] == 0
+
+    @_locked
     def songs(self) -> list[SongInfo]:
         rows = self.conn.execute(
             f"SELECT {_INFO_COLUMNS} FROM song ORDER BY title COLLATE NOCASE"
@@ -138,6 +160,11 @@ class Library:
             for r in rows
         ]
 
+    @_locked
+    def song_id(self, sha1: str) -> int:
+        return self.conn.execute("SELECT id FROM song WHERE sha1 = ?", (sha1,)).fetchone()[0]
+
+    @_locked
     def musicxml(self, song_id: int) -> str:
         row = self.conn.execute("SELECT musicxml FROM song WHERE id = ?", (song_id,)).fetchone()
         if row is None:
@@ -145,6 +172,7 @@ class Library:
         return zlib.decompress(row[0]).decode("utf-8")
 
     # -- lyrics ------------------------------------------------------------
+    @_locked
     def lyrics(self, song_id: int) -> str:
         """The song's lyrics as typed in TuneView, or ''."""
         row = self.conn.execute(
@@ -152,6 +180,7 @@ class Library:
         ).fetchone()
         return row[0] if row else ""
 
+    @_locked
     def set_lyrics(self, song_id: int, text: str) -> None:
         """Save the song's lyrics; blank text deletes them."""
         row = self.conn.execute("SELECT sha1 FROM song WHERE id = ?", (song_id,)).fetchone()
