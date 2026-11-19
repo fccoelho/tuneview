@@ -314,10 +314,24 @@ class Player:
         self._lock = threading.Lock()
         self._pos = 0
         self._total = 0
+        self._paused = False
 
     @property
     def playing(self) -> bool:
+        """True from play() until stop(), including while paused."""
         return self._device is not None
+
+    @property
+    def paused(self) -> bool:
+        return self._paused
+
+    def pause(self) -> None:
+        """Hold the position; the device plays silence until resume()."""
+        if self.playing:
+            self._paused = True
+
+    def resume(self) -> None:
+        self._paused = False
 
     @property
     def position(self) -> float:
@@ -333,12 +347,15 @@ class Player:
 
         self.stop()
         with self._lock:
-            self._pos, self._total = 0, len(pcm)
+            self._pos, self._total, self._paused = 0, len(pcm), False
             data = pcm.tobytes()
 
             def stream():
                 frames = yield b""
                 while self._pos < self._total:
+                    if self._paused:
+                        frames = yield b"\x00\x00" * frames
+                        continue
                     chunk = data[self._pos * 2:(self._pos + frames) * 2]
                     self._pos += len(chunk) // 2
                     frames = yield chunk
@@ -361,5 +378,6 @@ class Player:
     def stop(self) -> None:
         with self._lock:
             device, self._device = self._device, None
+            self._paused = False
         if device is not None:
             device.close()

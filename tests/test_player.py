@@ -137,3 +137,24 @@ def test_player_plays_to_the_end_and_stops(monkeypatch):
     assert player.position == pytest.approx(player.length)
     player.stop()
     assert not player.playing
+
+
+def test_player_pause_holds_the_position(monkeypatch):
+    monkeypatch.setenv("TUNEVIEW_AUDIO", "null")
+    player = Player()
+    player.play(np.zeros(SAMPLE_RATE * 2, dtype=np.int16))
+    time.sleep(0.15)
+    player.pause()
+    assert player.paused and player.playing
+    time.sleep(0.05)  # let a buffer already in flight finish
+    held = player.position
+    time.sleep(0.2)
+    assert player.position == held
+    player.resume()
+    deadline = time.time() + 2
+    while player.position == held and time.time() < deadline:
+        time.sleep(0.02)
+    assert player.position > held and not player.paused
+    player.pause()
+    player.stop()
+    assert not player.playing and not player.paused

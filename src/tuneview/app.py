@@ -481,7 +481,7 @@ class TuneView:
                             color=ft.Colors.ON_SURFACE_VARIANT,
                         ),
                         ft.Text(
-                            "Keys: / search · P play · ↓ ↑ PgDn PgUp scroll · [ ] transpose · "
+                            "Keys: / search · P play · Space pause · ↓ ↑ PgDn PgUp scroll · [ ] transpose · "
                             "S sheet · C chords · G scales · L library · D dark",
                             size=12,
                             color=ft.Colors.ON_SURFACE_VARIANT,
@@ -752,6 +752,8 @@ class TuneView:
         while self.player.playing and self.player.position < self.player.length:
             pos, length = self.player.position, self.player.length
             self.time_text.value = f"{_mmss(pos)} / {_mmss(length)}"
+            if self.player.paused:
+                self.time_text.value = f"Paused {_mmss(pos)}"
             self.play_progress.value = pos / length if length else 0
             i = bisect.bisect_right(starts, pos) - 1
             try:
@@ -802,6 +804,14 @@ class TuneView:
                 before = sum(self._content_heights.get(i, 0) for i in range(info["index"]))
                 offset = before + 16 * info["index"] + SHEET_PAD + top_px
                 await self.content.scroll_to(offset=max(0.0, offset - 40), duration=300)
+
+    def toggle_pause(self) -> None:
+        """Pause or resume what's playing; the bar stays highlighted while paused."""
+        if self.player.paused:
+            self.player.resume()
+        else:
+            self.player.pause()
+        self.page.update()
 
     def stop_playback(self) -> None:
         self.player.stop()
@@ -963,7 +973,9 @@ class TuneView:
                 self.populate_list(self.state.songs)
                 self.page.update()
             return
-        if key in ("Arrow Down", "Page Down", " "):  # page-turner pedals send these
+        if key == " " and self.player.playing:  # Space pauses and resumes playback
+            self.toggle_pause()
+        elif key in ("Arrow Down", "Page Down", " "):  # page-turner pedals send these
             await self.scroll_by(0.85 if key != "Arrow Down" else 0.3)
         elif key in ("Arrow Up", "Page Up"):
             await self.scroll_by(-0.85 if key == "Page Up" else -0.3)

@@ -70,8 +70,9 @@ uv run pytest                     # tests
 | --- | --- |
 | `/` | search (`Enter` opens the best match, `Esc` clears) |
 | `P` | play / stop |
+| `Space` | pause / resume while playing (scrolls otherwise) |
 | `G` | show / hide the improvisation scales |
-| `↓` `↑`, `PgDn` `PgUp`, `Space` | scroll (page-turner pedals send these) |
+| `↓` `↑`, `PgDn` `PgUp`, `Space` | scroll (page-turner pedals send these; Space only when not playing) |
 | `Home` | back to the top |
 | `]` `[` | transpose up / down a semitone |
 | `+` `-` | larger / smaller notation |
