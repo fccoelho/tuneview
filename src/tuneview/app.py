@@ -33,6 +33,7 @@ from .player import (
     synthesize,
     tempo_map,
 )
+from .scales import Mark, ScaleGuide, scale_guides, scale_marks
 
 SHEET, CHART = "sheet", "chart"
 ZOOM_STEPS = [30, 35, 40, 45, 50, 55, 60, 70, 80]
@@ -68,6 +69,7 @@ class Rendered:
     timeline: list[tuple[str, float]] = field(default_factory=list)
     melody: list[tuple[float, float, int]] = field(default_factory=list)
     tempos: list[tuple[float, float]] = field(default_factory=list)
+    guides: dict[str, ScaleGuide] = field(default_factory=dict)  # chord id -> scale
     error: str = ""
 
     @property
@@ -91,6 +93,7 @@ class State:
     play_mode: str = "melody"  # see player.PLAY_MODES
     swing: str = "Off"  # see player.SWING; swing is opt-in
     chord_style: str = "compact"  # see engraver.CHORD_STYLES
+    show_scales: bool = False  # draw improvisation scales on the bar being played
 
     @property
     def total_shift(self) -> int:
@@ -245,6 +248,11 @@ class TuneView:
             options=[ft.DropdownOption(key=str(s), text=f"{round(s * 100)}%") for s in SPEEDS],
             on_select=self.on_playback_setting,
         )
+        self.scales_switch = ft.Switch(
+            label="Scales", value=self.state.show_scales, on_change=self.on_scales,
+            tooltip="While playing, draw a scale to improvise with over each chord (G)",
+        )
+        self.scale_text = ft.Text("", size=13, color=ft.Colors.TERTIARY, italic=True)
         self.transport = ft.Container(
             visible=False,
             padding=ft.Padding.symmetric(horizontal=12, vertical=8),
@@ -258,6 +266,8 @@ class TuneView:
                             ft.Container(self.play_progress, width=220)],
                            spacing=10, tight=True, vertical_alignment=ft.CrossAxisAlignment.CENTER),
                     ft.Row([self.play_mode_dd, self.swing_dd, self.speed_dd], spacing=8, tight=True),
+                    ft.Row([self.scales_switch, self.scale_text], spacing=8, tight=True,
+                           vertical_alignment=ft.CrossAxisAlignment.CENTER),
                 ],
             ),
         )
@@ -403,7 +413,7 @@ class TuneView:
                 bars = chart_from_mei(eng.mei)
                 pages = [self.engraver.render_page(i, ink=ink) for i in range(1, eng.pages + 1)]
                 return Rendered(song, pages, bars, shift, page_width, timeline=eng.timeline,
-                                melody=eng.melody, tempos=eng.tempos)
+                                melody=eng.melody, tempos=eng.tempos, guides=scale_guides(bars))
             except Exception as exc:  # a bad file must not take the app down
                 return Rendered(song, [], [], shift, page_width, error=str(exc) or type(exc).__name__)
 
@@ -472,7 +482,7 @@ class TuneView:
                         ),
                         ft.Text(
                             "Keys: / search · P play · ↓ ↑ PgDn PgUp scroll · [ ] transpose · "
-                            "S sheet · C chords · L library · D dark",
+                            "S sheet · C chords · G scales · L library · D dark",
                             size=12,
                             color=ft.Colors.ON_SURFACE_VARIANT,
                         ),
@@ -519,10 +529,13 @@ class TuneView:
                 bgcolor=ft.Colors.with_opacity(0.16, ft.Colors.PRIMARY),
                 border=ft.Border.all(1.5, ft.Colors.with_opacity(0.6, ft.Colors.PRIMARY)),
             )
-            info = {"highlight": highlight, "boxes": page.boxes, "aspect": page.aspect,
+            scales = ft.Stack([], visible=False, left=0, top=0, width=0, height=0)
+            info = {"highlight": highlight, "scales": scales, "boxes": page.boxes,
+                    "staves": page.staves, "chords_x": page.chords_x, "aspect": page.aspect,
                     "width": 0.0, "index": len(out)}
             stack = ft.Stack(
-                [ft.Image(src=page.png, fit=ft.BoxFit.FIT_WIDTH, gapless_playback=True), highlight],
+                [ft.Image(src=page.png, fit=ft.BoxFit.FIT_WIDTH, gapless_playback=True), highlight,
+                 scales],
                 on_size_change=lambda e, info=info: info.__setitem__("width", e.width),
             )
             self._sheet_pages.append(info)
@@ -758,6 +771,7 @@ class TuneView:
         if bar_id == self._highlighted:
             return
         self._highlighted = bar_id
+        self.show_scales(bar_id)
         # Chord chart: tint the cell, scroll its line into view
         for cell, _, bg in self._chart_cells.values():
             cell.bgcolor = bg
@@ -799,7 +813,52 @@ class TuneView:
             cell.bgcolor = bg
         for info in self._sheet_pages:
             info["highlight"].visible = False
+        self.show_scales(None)
         self._highlighted, self._scrolled_to = None, None
+
+    # ----------------------------------------------------------------- scales
+    def show_scales(self, bar_id: str | None) -> None:
+        """Draw the suggested scales over the bar being played (Sheet view) and
+        name them in the transport bar; clear them when bar_id is None."""
+        r = self.state.rendered
+        bar = next((b for b in r.bars if b.id == bar_id), None) if r and bar_id else None
+        if not self.state.show_scales or bar is None:
+            bar = None
+        for info in self._sheet_pages:
+            layer = info["scales"]
+            layer.visible, layer.controls = False, []
+            if bar is None or bar.id not in info["staves"] or not info["width"]:
+                continue
+            w = info["width"]
+            h = w * info["aspect"]
+            marks = scale_marks(bar, r.guides, info["staves"][bar.id], info["boxes"][bar.id][2],
+                                info["chords_x"], w, h)
+            layer.width, layer.height = w, h
+            layer.controls = [self._mark(m) for m in marks]
+            layer.visible = bool(marks)
+        self.scale_text.value = "   ".join(
+            f"{c.text}: {r.guides[c.id].name}" for c in bar.chords if c.id in r.guides
+        ) if bar else ""
+
+    @staticmethod
+    def _mark(m: Mark) -> ft.Control:
+        ink = ft.Colors.TERTIARY
+        if m.kind == "accidental":
+            return ft.Text(m.text, left=m.x, top=m.y, size=m.height, no_wrap=True,
+                           color=ft.Colors.with_opacity(0.85, ink))
+        opacity = {"root": 0.85, "note": 0.55, "ledger": 0.6}[m.kind]
+        return ft.Container(left=m.x, top=m.y, width=m.width, height=m.height,
+                            border_radius=m.height / 2 if m.kind != "ledger" else 0,
+                            bgcolor=ft.Colors.with_opacity(opacity, ink))
+
+    async def on_scales(self, e=None) -> None:
+        self.state.show_scales = bool(self.scales_switch.value)
+        self.show_scales(self._highlighted)
+        self.page.update()
+
+    async def toggle_scales(self) -> None:
+        self.scales_switch.value = not self.scales_switch.value
+        await self.on_scales()
 
     async def on_playback_setting(self, e) -> None:
         self.state.play_mode = self.play_mode_dd.value or "melody"
@@ -930,6 +989,8 @@ class TuneView:
             await self.toggle_theme()
         elif key == "P":
             await self.toggle_playback()
+        elif key == "G":
+            await self.toggle_scales()
         elif key == "F11":
             self.toggle_fullscreen()
 

@@ -181,6 +181,7 @@ def normalize_shift(semitones: int) -> int:
 class ChartChord:
     text: str
     beat: float  # 1-based position in the bar
+    id: str = ""  # MEI xml:id of the <harm>, shared with the SVG
 
 
 @dataclass
@@ -198,10 +199,25 @@ class ChartBar:
     rest_bars: int = 0  # >0 for a multi-bar rest
     marks: list[str] = field(default_factory=list)  # segno, coda, rehearsal…
     directions: list[str] = field(default_factory=list)  # "D.S. al Coda", "Fine"…
+    clef: str = "G2"  # first staff: shape + line ("G2", "F4"), "" for others
+    key_sig: int = 0  # sharps (+) or flats (-) in the key signature
 
 
 def _harm_text(el: ET.Element) -> str:
     return " ".join("".join(el.itertext()).split())
+
+
+def _clef(c: ET.Element) -> str:
+    shape, line = c.get("shape", ""), c.get("line", "")
+    return shape + line if shape in ("G", "F") else ""
+
+
+def _key_sig(sig: str) -> int:
+    """MEI '3f' -> -3, '2s' -> 2, '0' -> 0."""
+    m = re.fullmatch(r"(\d+)([sf]?)", sig.strip())
+    if not m:
+        return 0
+    return -int(m.group(1)) if m.group(2) == "f" else int(m.group(1))
 
 
 def chart_from_mei(mei: str) -> list[ChartBar]:
@@ -211,6 +227,21 @@ def chart_from_mei(mei: str) -> list[ChartBar]:
     seen_endings: set[int] = set()
 
     unit = 4
+    clef, key_sig = "G2", 0
+
+    def set_staff(staff_def: ET.Element | None) -> None:
+        """Clef and key of the first staff, from a staffDef (or a mid-piece change)."""
+        nonlocal clef, key_sig
+        if staff_def is None:
+            return
+        if (c := staff_def.find(f"{MEI}clef")) is not None:
+            clef = _clef(c)
+        if (k := staff_def.find(f"{MEI}keySig")) is not None:
+            key_sig = _key_sig(k.get("sig", "0"))
+
+    def first_staff_def(el: ET.Element) -> ET.Element | None:
+        defs = list(el.iter(f"{MEI}staffDef"))
+        return next((d for d in defs if d.get("n") == "1"), defs[0] if defs else None)
 
     def set_meter(count: str | None, unit_: str | None) -> None:
         nonlocal beats, unit
@@ -220,12 +251,16 @@ def chart_from_mei(mei: str) -> list[ChartBar]:
             unit = int(unit_)
 
     def walk(el: ET.Element, ending: ET.Element | None) -> None:
+        nonlocal key_sig
         for child in el:
             tag = child.tag.removeprefix(MEI)
             if tag == "scoreDef":
                 if (ms := child.find(f".//{MEI}meterSig")) is not None:
                     set_meter(ms.get("count"), ms.get("unit"))
                 set_meter(child.get("meter.count"), child.get("meter.unit"))
+                set_staff(first_staff_def(child))
+                if (k := child.find(f"{MEI}keySig")) is not None:  # a key change for all staves
+                    key_sig = _key_sig(k.get("sig", "0"))
             elif tag == "ending":
                 walk(child, child)
             elif tag in ("section", "mdiv", "score", "body", "music"):
@@ -236,7 +271,13 @@ def chart_from_mei(mei: str) -> list[ChartBar]:
     def _bar(m: ET.Element, ending: ET.Element | None) -> ChartBar:
         if (ms := m.find(f".//{MEI}meterSig")) is not None:
             set_meter(ms.get("count"), ms.get("unit"))
-        bar = ChartBar(number=m.get("n", ""), id=m.get(XML_ID, ""), beats=beats, unit=unit)
+        nonlocal clef
+        for staff in m.iter(f"{MEI}staff"):  # a clef change inside the first staff
+            if staff.get("n") == "1":
+                for c in staff.iter(f"{MEI}clef"):
+                    clef = _clef(c)
+        bar = ChartBar(number=m.get("n", ""), id=m.get(XML_ID, ""), beats=beats, unit=unit,
+                       clef=clef, key_sig=key_sig)
         left, right = m.get("left", ""), m.get("right", "")
         bar.repeat_start = left in ("rptstart", "rptboth") or right == "rptboth"
         bar.repeat_end = right in ("rptend", "rptboth")
@@ -255,7 +296,7 @@ def chart_from_mei(mei: str) -> list[ChartBar]:
             text, beat = _harm_text(h), float(h.get("tstamp", "1"))
             if text and (text, beat) not in seen:
                 seen.add((text, beat))
-                bar.chords.append(ChartChord(text, beat))
+                bar.chords.append(ChartChord(text, beat, h.get(XML_ID, "")))
         bar.chords.sort(key=lambda c: c.beat)
         for rm in m.iter(f"{MEI}repeatMark"):
             func = rm.get("func", "")
@@ -299,6 +340,10 @@ class Page:
     # Where each bar sits on the page, as fractions of its width and height:
     # bar id -> (left, top, right, bottom) of the bar's staves
     boxes: dict[str, tuple[float, float, float, float]] = field(default_factory=dict)
+    # bar id -> (top line, bottom line) of the bar's first staff
+    staves: dict[str, tuple[float, float]] = field(default_factory=dict)
+    # chord symbol (MEI harm id) -> its left edge, where its note is
+    chords_x: dict[str, float] = field(default_factory=dict)
 
 
 def _base_id(xml_id: str) -> str:
@@ -355,35 +400,47 @@ def _melody(timemap: list[dict], mei_root: ET.Element,
 _LINE_RE = re.compile(r"M\s*(-?[\d.]+)\s+(-?[\d.]+)\s*L\s*(-?[\d.]+)\s+(-?[\d.]+)")
 
 
-def bar_boxes(svg: str) -> dict[str, tuple[float, float, float, float]]:
-    """Each bar's staff area on a Verovio SVG page, as fractions of the page."""
+Box = tuple[float, float, float, float]
+
+
+def page_layout(svg: str) -> tuple[dict[str, Box], dict[str, tuple[float, float]], dict[str, float]]:
+    """Where things are on a Verovio SVG page, as fractions of its width and height:
+    each bar's staff area (left, top, right, bottom), each bar's first staff (top
+    line, bottom line), and the left edge of each chord symbol."""
     root = ET.fromstring(svg)
     inner = next((e for e in root.iter(f"{SVG}svg") if "definition-scale" in e.get("class", "")), None)
     if inner is None:
-        return {}
+        return {}, {}, {}
     _, _, vw, vh = (float(v) for v in inner.get("viewBox", "0 0 1 1").split())
     tx = ty = 0.0
     margin = next((e for e in root.iter(f"{SVG}g") if e.get("class") == "page-margin"), None)
     if margin is not None and (m := re.search(r"translate\(([-\d.]+),\s*([-\d.]+)\)",
                                               margin.get("transform", ""))):
         tx, ty = float(m.group(1)), float(m.group(2))
-    boxes = {}
+    boxes: dict[str, Box] = {}
+    staves: dict[str, tuple[float, float]] = {}
+    chords_x: dict[str, float] = {}
     for g in root.iter(f"{SVG}g"):
         if "measure" not in g.get("class", "").split():
             continue
         xs, ys = [], []
-        for staff in g.iter(f"{SVG}g"):
-            if "staff" not in staff.get("class", "").split():
-                continue
+        for n, staff in enumerate(e for e in g.iter(f"{SVG}g") if "staff" in e.get("class", "").split()):
+            lines = []
             for path in staff.findall(f"{SVG}path"):
                 if m := _LINE_RE.match(path.get("d", "")):
                     x1, y1, x2, _ = (float(v) for v in m.groups())
                     xs += [x1, x2]
-                    ys.append(y1)
+                    lines.append(y1)
+            ys += lines
+            if n == 0 and lines:
+                staves[g.get("id", "")] = ((min(lines) + ty) / vh, (max(lines) + ty) / vh)
         if xs:
             boxes[g.get("id", "")] = ((min(xs) + tx) / vw, (min(ys) + ty) / vh,
                                       (max(xs) + tx) / vw, (max(ys) + ty) / vh)
-    return boxes
+        for harm in g.iter(f"{SVG}g"):
+            if "harm" in harm.get("class", "").split() and (text := harm.find(f"{SVG}text")) is not None:
+                chords_x[harm.get("id", "")] = (float(text.get("x", 0)) + tx) / vw
+    return boxes, staves, chords_x
 
 
 class Engraver:
@@ -438,10 +495,10 @@ class Engraver:
 
     def render_page(self, page: int, *, width_px: int = 1600, ink: str = "#000000") -> Page:
         """One page (1-based) of the loaded score: PNG on a transparent background,
-        plus where each bar is on it."""
+        plus where each bar, its first staff and each chord symbol are on it."""
         with self._lock:
             svg = self._tk.renderToSVG(page)
-        boxes = bar_boxes(svg)
+        boxes, staves, chords_x = page_layout(svg)
         svg = _CSYM_RE.sub(_fix_csym, svg)
         # Glyphs and lines use currentColor; text has no fill and would stay black.
         svg = svg.replace('color="black"', f'color="{ink}" fill="{ink}"', 1)
@@ -458,7 +515,7 @@ class Engraver:
         )
         # PNG header: width and height are big-endian u32s at bytes 16-24
         w, h = int.from_bytes(png[16:20], "big"), int.from_bytes(png[20:24], "big")
-        return Page(png, h / w if w else 1.4, boxes)
+        return Page(png, h / w if w else 1.4, boxes, staves, chords_x)
 
 
 def _fix_csym(m: re.Match) -> str:

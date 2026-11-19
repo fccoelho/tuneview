@@ -21,6 +21,15 @@ way you need to play it:
   50–150% of the written tempo. Swing is optional: Off (the default), Light,
   Medium, Hard, or Auto, which guesses per tune. The bar being played is
   highlighted and kept in view in both the Sheet and Chords views.
+- **Scales for improvising**: turn on Scales (or press `G`) and, while the tune
+  plays, the bar being played shows a scale for each chord as faint noteheads on
+  the staff, climbing from the chord symbol, with the scale names in the
+  transport bar. The choice follows chord-scale practice (m7 → Dorian, 7 →
+  Mixolydian, ø7 → Locrian, °7 → whole-half diminished, 7♭9 → half-whole…),
+  refined by the key (a m7 on the 3rd of the key is Phrygian, a △7 on the 4th is
+  Lydian) and by where a dominant resolves (into a minor chord → Phrygian
+  dominant). Accidentals outside the key signature are printed above their
+  notes.
 - Instant search across title and composer, light and dark themes, and keyboard
   control that works with page-turner pedals.
 
@@ -61,6 +70,7 @@ uv run pytest                     # tests
 | --- | --- |
 | `/` | search (`Enter` opens the best match, `Esc` clears) |
 | `P` | play / stop |
+| `G` | show / hide the improvisation scales |
 | `↓` `↑`, `PgDn` `PgUp`, `Space` | scroll (page-turner pedals send these) |
 | `Home` | back to the top |
 | `]` `[` | transpose up / down a semitone |

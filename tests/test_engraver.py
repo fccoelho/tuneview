@@ -94,6 +94,13 @@ def test_render_page_returns_png_and_bar_boxes(engraver, mini_xml):
     for left, top, right, bottom in boxes:
         assert 0 <= left < right <= 1 and 0 <= top < bottom <= 1
     assert boxes[0][2] <= boxes[1][0] + 1e-6  # bar 2 starts where bar 1 ends
+    # The first staff of each bar, and each chord symbol's left edge inside its bar
+    bars = chart_from_mei(eng.mei)
+    for bar, (left, top, right, bottom) in zip(bars, boxes, strict=True):
+        assert page.staves[bar.id] == pytest.approx((top, bottom))  # a single staff
+        for chord in bar.chords:
+            assert left <= page.chords_x[chord.id] < right
+    assert page.chords_x[bars[0].chords[0].id] < page.chords_x[bars[0].chords[1].id]
 
 
 def test_timeline_plays_repeats_and_endings(engraver, mini_xml):
