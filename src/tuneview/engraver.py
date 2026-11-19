@@ -105,6 +105,66 @@ def fix_harmony_offsets(musicxml: str) -> str:
     return ET.tostring(root, encoding="unicode")
 
 
+# ----------------------------------------------------------------------------
+# Chord-symbol style
+# ----------------------------------------------------------------------------
+# How chord symbols are spelled: as the source file labels them, or in a compact
+# jazz style (Cm7, C△7, Cø7, C°7).
+CHORD_STYLES = {"compact": "Compact", "written": "As written"}
+
+# Compact labels for chord kinds the file leaves unlabelled, where Verovio's own
+# default (CMaj7, Cm7(♭5), Cdim7…) isn't already compact.
+_COMPACT_KIND = {
+    "major-seventh": "△7",
+    "major-ninth": "△9",
+    "major-13th": "△13",
+    "major-minor": "m(△7)",
+    "minor-major": "m(△7)",
+    "half-diminished": "ø7",
+    "diminished": "°",
+    "diminished-seventh": "°7",
+}
+
+
+def compact_quality(quality: str) -> str:
+    """'min7' -> 'm7', 'maj7' -> '△7', 'min7(b5)' -> 'ø7', 'dim7' -> '°7'…"""
+    q = quality.strip()
+    q = re.sub(r"^(?:min|mi|-)", "m", q)
+    q = re.sub(r"^m7\(?[b♭]5\)?", "ø7", q)
+    q = re.sub(r"^(?:dim|o)(?=7|$)", "°", q)
+    if q in ("maj", "ma", "Maj"):  # a plain major triad
+        return ""
+    q = re.sub(r"^maj6", "6", q)
+    return re.sub(r"(?:maj|Maj|ma|Ma|M)(?=[79]|1[13])", "△", q)
+
+
+def compact_chords(musicxml: str) -> str:
+    """Relabel every chord symbol in the compact style, before Verovio reads it.
+
+    A half-diminished chord written as min7 with a flattened 5th becomes ø7.
+    """
+    if "<harmony" not in musicxml:
+        return musicxml
+    root = ET.fromstring(musicxml)
+    for harmony in root.iter("harmony"):
+        kind = harmony.find("kind")
+        if kind is None:
+            continue
+        text = kind.get("text")
+        text = compact_quality(text) if text is not None else _COMPACT_KIND.get((kind.text or "").strip())
+        is_m7 = text == "m7" or (text is None and (kind.text or "").strip() == "minor-seventh")
+        if is_m7:
+            for degree in harmony.findall("degree"):
+                if (degree.findtext("degree-value", "").strip() == "5"
+                        and degree.findtext("degree-alter", "").strip() == "-1"):
+                    harmony.remove(degree)
+                    text = "ø7"
+                    break
+        if text is not None:
+            kind.set("text", text)
+    return ET.tostring(root, encoding="unicode")
+
+
 def transpose_option(semitones: int) -> str:
     return f"{semitones:+d}" if semitones else ""
 
@@ -337,8 +397,12 @@ class Engraver:
         self._lock = threading.Lock()
 
     def load(self, musicxml: str, *, transpose: int = 0, zoom: int = 45,
-             page_width: int = PAGE_WIDTH) -> Engraving:
-        """Engrave a score. A narrower page_width puts fewer bars on each line."""
+             page_width: int = PAGE_WIDTH, chord_style: str = "written") -> Engraving:
+        """Engrave a score. A narrower page_width puts fewer bars on each line;
+        chord_style is a CHORD_STYLES key."""
+        musicxml = fix_harmony_offsets(musicxml)
+        if chord_style == "compact":
+            musicxml = compact_chords(musicxml)
         with self._lock:
             self._tk.setOptions(
                 {
@@ -357,7 +421,7 @@ class Engraver:
                     "transpose": transpose_option(transpose),
                 }
             )
-            if not self._tk.loadData(fix_harmony_offsets(musicxml)):
+            if not self._tk.loadData(musicxml):
                 raise ValueError("Verovio could not read this MusicXML file")
             mei = self._tk.getMEI()
             timemap = self._tk.renderToTimemap({"includeMeasures": True})

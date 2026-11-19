@@ -4,6 +4,8 @@ from tuneview.app import transpose_key
 from tuneview.engraver import (
     Engraver,
     chart_from_mei,
+    compact_chords,
+    compact_quality,
     fix_harmony_offsets,
     normalize_shift,
     split_chord,
@@ -35,6 +37,50 @@ def test_transposition_applies_to_chords(engraver, mini_xml):
     bars = chart(engraver, mini_xml, transpose=2)  # F major -> G major
     assert [c.text for c in bars[0].chords] == ["Gmaj7", "Emin7"]
     assert [c.text for c in bars[1].chords] == ["C7", "D7/F♯"]
+
+
+def test_compact_chord_style(engraver, mini_xml):
+    bars = chart_from_mei(engraver.load(mini_xml, chord_style="compact").mei)
+    assert [c.text for c in bars[0].chords] == ["F△7", "Dm7"]
+    assert [c.text for c in bars[1].chords] == ["B♭7", "C7/E"]
+    bars = chart_from_mei(engraver.load(mini_xml, transpose=2, chord_style="compact").mei)
+    assert [c.text for c in bars[0].chords] == ["G△7", "Em7"]
+
+
+@pytest.mark.parametrize(
+    "written, compact",
+    [("min7", "m7"), ("mi7", "m7"), ("m7", "m7"), ("-7", "m7"), ("min", "m"), ("min11", "m11"),
+     ("maj7", "△7"), ("ma7", "△7"), ("Maj7", "△7"), ("maj9", "△9"), ("maj13", "△13"),
+     ("maj7sus", "△7sus"), ("maj6", "6"), ("maj", ""), ("min(maj7)", "m(△7)"),
+     ("min7(b5)", "ø7"), ("m7♭5", "ø7"), ("dim7", "°7"), ("dim", "°"), ("o7", "°7"),
+     ("7", "7"), ("7sus", "7sus"), ("13", "13"), ("6/9", "6/9"), ("", ""), ("5", "5")],
+)
+def test_compact_quality(written, compact):
+    assert compact_quality(written) == compact
+
+
+def harmony(kind: str, degrees: str = "") -> str:
+    return (f'<score-partwise><part id="P1"><measure number="1"><harmony><root><root-step>C'
+            f"</root-step></root>{kind}{degrees}</harmony></measure></part></score-partwise>")
+
+
+FLAT_FIVE = ("<degree><degree-value>5</degree-value><degree-alter>-1</degree-alter>"
+             "<degree-type>alter</degree-type></degree>")
+
+
+def test_compact_chords_relabels_kinds_and_half_diminished():
+    assert 'text="△7"' in compact_chords(harmony('<kind text="maj7">major-seventh</kind>'))
+    assert 'text="△7"' in compact_chords(harmony("<kind>major-seventh</kind>"))
+    assert 'text="°7"' in compact_chords(harmony("<kind>diminished-seventh</kind>"))
+    assert 'text="ø7"' in compact_chords(harmony("<kind>half-diminished</kind>"))
+    assert "text=" not in compact_chords(harmony("<kind>minor-seventh</kind>"))  # Verovio: Cm7
+    for kind in ('<kind text="min7">minor-seventh</kind>', "<kind>minor-seventh</kind>"):
+        out = compact_chords(harmony(kind, FLAT_FIVE))
+        assert 'text="ø7"' in out and "<degree>" not in out
+    # A flat 5th on a dominant chord stays an alteration.
+    out = compact_chords(harmony('<kind text="7">dominant</kind>', FLAT_FIVE))
+    assert 'text="7"' in out and "<degree>" in out
+    assert compact_chords("<score-partwise/>") == "<score-partwise/>"
 
 
 def test_render_page_returns_png_and_bar_boxes(engraver, mini_xml):

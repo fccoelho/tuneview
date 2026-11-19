@@ -13,6 +13,9 @@ way you need to play it:
   on their beats. It's easy to read from a distance.
 - **Transposition** for B♭, E♭ and F instruments, plus any extra shift in
   semitones. The notation, the chord chart and the displayed key all follow it.
+- **Chord symbols**: Compact (the default) spells them the jazz way: `Cm7`,
+  `C△7`, `Cø7`, `C°7`. As written uses the labels from the source file instead
+  (`Cmin7`, `Cmaj7`…).
 - **Playback**: the melody, a simple band (bass and piano comping from the chord
   symbols) or both. It plays at concert pitch plus your own transposition, at
   50–150% of the written tempo. Swing is optional: Off (the default), Light,

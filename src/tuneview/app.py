@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 import flet as ft
 
 from .engraver import (
+    CHORD_STYLES,
     INSTRUMENTS,
     ChartBar,
     Engraver,
@@ -89,6 +90,7 @@ class State:
     speed: float = 1.0
     play_mode: str = "melody"  # see player.PLAY_MODES
     swing: str = "Off"  # see player.SWING; swing is opt-in
+    chord_style: str = "compact"  # see engraver.CHORD_STYLES
 
     @property
     def total_shift(self) -> int:
@@ -188,6 +190,15 @@ class TuneView:
             ],
             on_select=self.on_instrument,
         )
+        self.chord_style_dd = ft.Dropdown(
+            value=self.state.chord_style,
+            width=150,
+            dense=True,
+            label="Chord symbols",
+            tooltip="Compact: Cm7, C△7, Cø7, C°7. As written: the file's own labels.",
+            options=[ft.DropdownOption(key=k, text=v) for k, v in CHORD_STYLES.items()],
+            on_select=self.on_chord_style,
+        )
         self.shift_text = ft.Text("0", width=30, text_align=ft.TextAlign.CENTER,
                                   weight=ft.FontWeight.W_600)
         transpose_box = self._group(
@@ -272,7 +283,7 @@ class TuneView:
                         wrap=True,
                         spacing=12,
                         vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                        controls=[self.mode_button, self.instrument_dd, transpose_box,
+                        controls=[self.mode_button, self.instrument_dd, self.chord_style_dd, transpose_box,
                                   zoom_box, self.theme_button, self.fullscreen_button],
                     ),
                 ],
@@ -381,12 +392,14 @@ class TuneView:
         self.page.update()
 
         shift, zoom, page_width = self.state.total_shift, self.state.zoom, self._page_width()
+        chord_style = self.state.chord_style
         ink = "#e6e1e5" if self.dark else "#000000"
 
         def work() -> Rendered:
             try:
                 xml = self.library.musicxml(song.id)
-                eng = self.engraver.load(xml, transpose=shift, zoom=zoom, page_width=page_width)
+                eng = self.engraver.load(xml, transpose=shift, zoom=zoom, page_width=page_width,
+                                         chord_style=chord_style)
                 bars = chart_from_mei(eng.mei)
                 pages = [self.engraver.render_page(i, ink=ink) for i in range(1, eng.pages + 1)]
                 return Rendered(song, pages, bars, shift, page_width, timeline=eng.timeline,
@@ -809,6 +822,10 @@ class TuneView:
 
     async def on_instrument(self, e) -> None:
         self.state.instrument = self.instrument_dd.value or "C"
+        await self.render()
+
+    async def on_chord_style(self, e) -> None:
+        self.state.chord_style = self.chord_style_dd.value or "compact"
         await self.render()
 
     async def change_shift(self, delta: int) -> None:
