@@ -1,5 +1,7 @@
 import sqlite3
 
+import pytest
+
 from tuneview.library import SCHEMA, Library, SongInfo, fold, search
 
 
@@ -46,7 +48,7 @@ def test_create_replaces_legacy_schema(tmp_path):
     lib.create()
     assert lib.is_ready()
     tables = {r[0] for r in lib.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    assert tables == {"song", "lyrics"}
+    assert tables == {"song", "lyrics", "lyrics_alignment"}
 
 
 def test_lyrics_are_saved_and_survive_a_reimport(tmp_path, mini_path):
@@ -82,3 +84,49 @@ def test_a_v2_library_gains_the_lyrics_table(tmp_path):
     assert [s.title for s in lib.songs()] == ["Tune"]  # nothing lost
     lib.set_lyrics(lib.songs()[0].id, "La la")
     assert lib.lyrics(lib.songs()[0].id) == "La la"
+
+
+def test_a_v3_library_gains_the_alignment_table(tmp_path):
+    path = tmp_path / "v3.sqlite"
+    con = sqlite3.connect(path)
+    con.executescript(SCHEMA.split("-- Where the lyrics go")[0])  # v3: song + lyrics
+    con.execute("INSERT INTO song (title, sha1, musicxml) VALUES ('Tune', 'abc', x'00')")
+    con.execute("INSERT INTO lyrics (sha1, text) VALUES ('abc', 'La la')")
+    con.execute("PRAGMA user_version = 3")
+    con.commit()
+    con.close()
+
+    lib = Library(path)
+    assert lib.is_ready()
+    song_id = lib.songs()[0].id
+    assert lib.lyrics(song_id) == "La la"  # nothing lost
+    assert lib.lyrics_alignment(song_id) is None
+    lib.set_lyrics_alignment(song_id, ["m1", "m2"], [1, 1])
+    assert lib.lyrics_alignment(song_id) == (["m1", "m2"], [1, 1])
+
+
+def test_chart_lyric_alignment_is_saved_and_cleared_with_the_words(tmp_path, mini_path):
+    from tuneview.importer import import_folder
+
+    (tmp_path / "scores").mkdir()
+    (tmp_path / "scores" / "mini.musicxml").write_bytes(mini_path.read_bytes())
+    lib = Library(tmp_path / "lib.sqlite")
+    import_folder(tmp_path / "scores", lib, log=lambda *a: None)
+    song_id = lib.songs()[0].id
+
+    lib.set_lyrics(song_id, "One two three four")
+    lib.set_lyrics_alignment(song_id, ["m1", "m2"], [3, 1])
+    assert lib.lyrics_alignment(song_id) == (["m1", "m2"], [3, 1])
+
+    lib.set_lyrics(song_id, "One two three four")  # unchanged: keep the alignment
+    assert lib.lyrics_alignment(song_id) == (["m1", "m2"], [3, 1])
+
+    lib.set_lyrics(song_id, "One two three five")  # new words: the split no longer fits
+    assert lib.lyrics_alignment(song_id) is None
+
+    with pytest.raises(ValueError):
+        lib.set_lyrics_alignment(song_id, ["m1"], [1, 2])
+    with pytest.raises(ValueError):
+        lib.set_lyrics_alignment(song_id, ["m1", "m2"], [-1, 1])
+    with pytest.raises(KeyError):
+        lib.set_lyrics_alignment(9999, [], [])

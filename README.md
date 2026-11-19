@@ -10,7 +10,12 @@ way you need to play it:
 - **Sheet**: the engraved leadsheet, with melody, chord symbols and lyrics (when
   the source has them), repeats, endings and D.S./coda marks.
 - **Chords**: a large-print chord chart, four bars per line, with chords placed
-  on their beats. It's easy to read from a distance.
+  on their beats. When the tune has lyrics, the words are printed under the
+  chords too; **Align lyrics** opens an editor where you move words from bar to
+  bar, and the layout is saved with the tune. There, `Enter` splits a bar at the
+  cursor and pushes the later bars forward (at the bar's start it leaves an empty
+  bar); `Backspace`/`Delete` at a bar's start/end join it with the neighbouring
+  bar and pull the later bars back. It's easy to read from a distance.
 - **Lyrics**: the words in large print. Add or edit them with the Lyrics
   view's button: paste or type them, with a blank line between verses; a line
   like `[Chorus]` or `Verse 2:` on top of a verse becomes its heading.

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+import json
 import os
 import sqlite3
 import threading
@@ -11,7 +12,7 @@ import zlib
 from dataclasses import dataclass
 from pathlib import Path
 
-SCHEMA_VERSION = 3  # v3 added the lyrics table to v2
+SCHEMA_VERSION = 4  # v4 added chord-chart lyric alignment to v3
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS song (
@@ -38,6 +39,14 @@ CREATE TABLE IF NOT EXISTS song (
 CREATE TABLE IF NOT EXISTS lyrics (
     sha1        TEXT PRIMARY KEY,
     text        TEXT NOT NULL,
+    updated     TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+-- Where the lyrics go on the chord chart: the chart's bar numbers and how many
+-- consecutive lyric words belong to each bar. Kept apart from the text so the
+-- words themselves stay editable on the Lyrics page.
+CREATE TABLE IF NOT EXISTS lyrics_alignment (
+    sha1        TEXT PRIMARY KEY,
+    data        TEXT NOT NULL,
     updated     TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 """
@@ -99,7 +108,7 @@ class Library:
         self.path = Path(path) if path else default_db_path()
         self.conn = sqlite3.connect(self.path, check_same_thread=False)
         self._lock = threading.RLock()
-        if self._version() == 2:  # add the lyrics table; nothing else changed
+        if self._version() in (2, 3):  # add the tables introduced in v3 and v4
             self.conn.executescript(SCHEMA)
             self.conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             self.conn.commit()
@@ -182,11 +191,14 @@ class Library:
 
     @_locked
     def set_lyrics(self, song_id: int, text: str) -> None:
-        """Save the song's lyrics; blank text deletes them."""
+        """Save the song's lyrics; blank text deletes them. Changing the words clears
+        the chord-chart alignment, which would no longer line up with them."""
         row = self.conn.execute("SELECT sha1 FROM song WHERE id = ?", (song_id,)).fetchone()
         if row is None:
             raise KeyError(song_id)
         text = text.strip()
+        old = self.conn.execute("SELECT text FROM lyrics WHERE sha1 = ?", (row[0],)).fetchone()
+        old_text = old[0] if old else ""
         if text:
             self.conn.execute(
                 "INSERT INTO lyrics (sha1, text) VALUES (?, ?) ON CONFLICT (sha1)"
@@ -195,6 +207,43 @@ class Library:
             )
         else:
             self.conn.execute("DELETE FROM lyrics WHERE sha1 = ?", (row[0],))
+        if text != old_text:  # a new set of words: the old chart alignment no longer fits
+            self.conn.execute("DELETE FROM lyrics_alignment WHERE sha1 = ?", (row[0],))
+        self.conn.commit()
+
+    # -- lyrics alignment on the chord chart -------------------------------
+    @_locked
+    def lyrics_alignment(self, song_id: int) -> tuple[list[str], list[int]] | None:
+        """Where each lyric word sits on the chart: (bar numbers, words on each bar), or None."""
+        row = self.conn.execute(
+            "SELECT a.data FROM lyrics_alignment a JOIN song s ON s.sha1 = a.sha1 WHERE s.id = ?",
+            (song_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            data = json.loads(row[0])
+            bars = [str(b) for b in data["bars"]]
+            counts = [int(c) for c in data["counts"]]
+        except (ValueError, TypeError, KeyError, IndexError):
+            return None
+        if len(bars) != len(counts) or any(c < 0 for c in counts):
+            return None
+        return bars, counts
+
+    @_locked
+    def set_lyrics_alignment(self, song_id: int, bars: list[str], counts: list[int]) -> None:
+        """Save the chart lyric alignment: one bar number and word count per bar."""
+        if len(bars) != len(counts) or any(c < 0 for c in counts):
+            raise ValueError("bars and counts must line up, with no negative counts")
+        row = self.conn.execute("SELECT sha1 FROM song WHERE id = ?", (song_id,)).fetchone()
+        if row is None:
+            raise KeyError(song_id)
+        self.conn.execute(
+            "INSERT INTO lyrics_alignment (sha1, data) VALUES (?, ?) ON CONFLICT (sha1)"
+            " DO UPDATE SET data = excluded.data, updated = CURRENT_TIMESTAMP",
+            (row[0], json.dumps({"bars": list(bars), "counts": list(counts)})),
+        )
         self.conn.commit()
 
 

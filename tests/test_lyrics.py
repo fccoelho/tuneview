@@ -1,6 +1,9 @@
 import pytest
 
-from tuneview.lyrics import Verse, heading_of, verses
+from tuneview.lyrics import (
+    Verse, chunks, heading_of, join_bars, join_words, lyric_words, spread_words, split_bars,
+    split_words, verses,
+)
 
 
 @pytest.mark.parametrize(
@@ -23,3 +26,64 @@ def test_verses_split_at_blank_lines_with_headings():
     ]
     assert verses("") == [] and verses("\n \n") == []
     assert verses("[Coda]") == [Verse("Coda", [])]
+
+
+def test_lyric_words_join_verses_and_skip_headings():
+    text = "[Chorus]\nFly me to the moon\n\nVerse 2:\nLet me play\n"
+    assert lyric_words(text) == ["Fly", "me", "to", "the", "moon", "Let", "me", "play"]
+    assert lyric_words("") == []
+    assert lyric_words("[Coda]") == []
+
+
+def test_spread_words_covers_every_word():
+    assert spread_words(8, 4) == [2, 2, 2, 2]
+    assert spread_words(3, 4) == [1, 1, 0, 1]
+    assert spread_words(5, 0) == []
+    assert spread_words(0, 3) == [0, 0, 0]
+    for words, bars in [(17, 32), (1, 8), (40, 12)]:
+        counts = spread_words(words, bars)
+        assert len(counts) == bars and sum(counts) == words and all(c >= 0 for c in counts)
+
+
+def test_chunks_split_words_by_bar():
+    assert chunks(["a", "b", "c", "d"], [2, 1, 1]) == [["a", "b"], ["c"], ["d"]]
+    assert chunks(["a", "b", "c"], [1, 1]) == [["a"], ["b", "c"]]  # overflow on the last bar
+    assert chunks([], [0, 0]) == [[], []]
+
+
+def test_split_words_and_join_words_keep_the_words_in_order():
+    assert split_words("All of me", 3) == ("All", "of me")
+    assert split_words("All of", 0) == ("", "All of")
+    assert split_words("All of", 6) == ("All of", "")
+    assert split_words("All of me", 99) == ("All of me", "")
+    assert join_words("All", "of me") == "All of me"
+    assert join_words("All of", "") == "All of"
+    assert join_words("", "All of") == "All of"
+    for left, right in [("All of", "me Why"), ("", "me Why"), ("All of", "")]:
+        assert " ".join(join_words(left, right).split()) == " ".join(f"{left} {right}".split())
+
+
+def _all_words(bars):
+    return [word for line in bars for word in line.split()]
+
+
+def test_split_bars_shifts_the_later_bars_forward():
+    bars = ["a b", "c", "d", "e"]
+    assert split_bars(bars, 0, 1) == ["a", "b", "c", "d e"]
+    assert split_bars(bars, 0, 0) == ["", "a b", "c", "d e"]  # an empty bar at the start
+    assert split_bars(bars, 1, 0) == ["a b", "", "c", "d e"]
+    assert split_bars(["a", "b"], 0, 1) == ["a", "b"]  # nothing after the caret
+    assert split_bars(bars, 3, 1) == bars  # the last bar has nothing to push into
+    assert split_bars(bars, 9, 1) == bars
+    assert _all_words(split_bars(bars, 0, 0)) == _all_words(bars)
+    assert _all_words(split_bars(bars, 0, 1)) == _all_words(bars)
+
+
+def test_join_bars_shifts_the_later_bars_back():
+    bars = ["a b", "c", "d", "e"]
+    assert join_bars(bars, 1) == ["a b c", "d", "e", ""]
+    assert join_bars(bars, 3) == ["a b", "c", "d e", ""]
+    assert join_bars(bars, 0) == bars
+    assert join_bars(bars, 4) == bars
+    assert _all_words(join_bars(bars, 1)) == _all_words(bars)
+    assert _all_words(join_bars(bars, 3)) == _all_words(bars)

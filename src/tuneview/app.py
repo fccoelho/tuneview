@@ -29,7 +29,9 @@ from .importer import (
     import_paths,
 )
 from .library import Library, SongInfo, search
-from .lyrics import verses
+from .lyrics import (
+    chunks, join_bars, lyric_words, spread_words, split_bars, split_words, verses,
+)
 from .player import (
     PLAY_MODES,
     SWING,
@@ -104,6 +106,7 @@ class State:
     swing: str = "Off"  # see player.SWING; swing is opt-in
     chord_style: str = "compact"  # see engraver.CHORD_STYLES
     show_scales: bool = False  # draw improvisation scales on the bar being played
+    chart_lyrics: bool = True  # print the lyric words under the chords in the chord chart
 
     @property
     def total_shift(self) -> int:
@@ -117,6 +120,7 @@ class TuneView:
         self.engraver = Engraver()
         self.player = Player()
         self.state = State(songs=library.songs())
+        self._alignment: dict | None = None  # state of the open lyrics-alignment editor
         self._build()
 
     # ------------------------------------------------------------------ layout
@@ -698,13 +702,48 @@ class TuneView:
         self.page.show_dialog(dialog)
 
     # ------------------------------------------------------------- chart view
+    @staticmethod
+    def _chart_bars(r: Rendered) -> list[ChartBar]:
+        """The bars the chart view prints, in order (what the lyrics align to)."""
+        return [b for b in r.bars if b.chords or b.rest_bars or b.number not in ("0", "")]
+
+    def _chart_lyric_counts(self, r: Rendered, bars: list[ChartBar],
+                            words: list[str]) -> list[int]:
+        """The saved words-per-bar split, or an even spread when it no longer fits."""
+        saved = self.library.lyrics_alignment(r.song.id) if words else None
+        if saved:
+            saved_bars, counts = saved
+            # MEI xml:ids change from one engraving to the next; bar numbers don't.
+            if (saved_bars == [b.number for b in bars] and len(counts) == len(bars)
+                    and sum(counts) == len(words)):
+                return counts
+        return spread_words(len(words), len(bars))
+
+    def _chart_lyrics_toolbar(self) -> ft.Control:
+        return ft.Row(
+            [
+                ft.Switch(label="Lyrics under chords", value=self.state.chart_lyrics,
+                          on_change=self.on_chart_lyrics),
+                ft.FilledTonalButton("Align lyrics", icon=ft.Icons.FORMAT_ALIGN_LEFT,
+                                     on_click=self.open_alignment_editor),
+            ],
+            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            wrap=True,
+        )
+
     def _chart(self, r: Rendered) -> list[ft.Control]:
-        bars = [b for b in r.bars if b.chords or b.rest_bars or b.number not in ("0", "")]
+        bars = self._chart_bars(r)
         if not any(b.chords for b in bars):
             return [self._notice(ft.Icons.INFO_OUTLINE,
                                  "This leadsheet has no chord symbols — switch to Sheet.")]
         size = self.state.zoom * 0.62  # chord font size follows the zoom setting
         per_line = self._bars_per_line()
+        # The lyrics run word by word across the tune's bars; each bar shows its own.
+        words = lyric_words(self.library.lyrics(r.song.id))
+        counts = self._chart_lyric_counts(r, bars, words) if words else []
+        parts = chunks(words, counts) if words else []
+        show_lyrics = bool(parts) and self.state.chart_lyrics
         lines: list[list[ChartBar]] = [[]]
         for bar in bars:
             line = lines[-1]
@@ -715,20 +754,207 @@ class TuneView:
             if bar.final or bar.double or bar.repeat_end:
                 lines.append([])
         rows: list[ft.Control] = []
+        if parts:  # lyrics exist: offer the toggle and the alignment editor
+            rows.append(self._chart_lyrics_toolbar())
+        index = 0
         for n, line in enumerate(ln for ln in lines if ln):
             row_key = f"chart-row-{n}"
             cells: list[ft.Control] = []
             for b in line:
-                cell = self._bar_cell(b, size)
+                lyric = " ".join(parts[index]) if show_lyrics and index < len(parts) else ""
+                cell = self._bar_cell(b, size, lyric)
                 if b.id:
                     self._chart_cells[b.id] = (cell, row_key, cell.bgcolor)
                 cells.append(cell)
+                index += 1
             cells += [ft.Container(expand=1) for _ in range(per_line - len(line))]
             rows.append(ft.Row(cells, spacing=0, vertical_alignment=ft.CrossAxisAlignment.STRETCH,
                                intrinsic_height=True, key=ft.ScrollKey(row_key)))
         return rows
 
-    def _bar_cell(self, bar: ChartBar, size: float) -> ft.Control:
+    def on_chart_lyrics(self, e: ft.Event[ft.Switch]) -> None:
+        self.state.chart_lyrics = bool(e.control.value)
+        self.show_content()
+        self.page.update()
+
+    def open_alignment_editor(self, e=None) -> None:
+        """Move the lyric words from bar to bar on the chord chart."""
+        r, song = self.state.rendered, self.state.current
+        if r is None or song is None:
+            return
+        bars = self._chart_bars(r)
+        words = lyric_words(self.library.lyrics(song.id))
+        if not words or not bars:
+            return
+        counts = self._chart_lyric_counts(r, bars, words)
+        fields: list[ft.TextField] = []
+        error = ft.Text("", size=12, color=ft.Colors.ERROR)
+
+        def label(bar: ChartBar) -> str:
+            chords = " · ".join(c.text for c in bar.chords) if bar.chords else "%"
+            return f"{bar.number}   {chords}"
+
+        def refill(new_counts: list[int]) -> None:
+            for field, part in zip(fields, chunks(words, new_counts)):
+                field.value = " ".join(part)
+            error.value = ""
+            self.page.update()
+
+        def close(e=None) -> None:
+            self._alignment = None
+            self.state.editing = False
+            self.page.pop_dialog()
+            self.page.update()
+
+        def dismiss(e=None) -> None:
+            self._alignment = None
+            self.state.editing = False
+
+        def save(e=None) -> None:
+            moved = [w for field in fields for w in (field.value or "").split()]
+            if moved != words:
+                error.value = ("The words must stay the same as on the Lyrics page — move "
+                               "whole words between bars, or edit the lyrics there.")
+                self.page.update()
+                return
+            self.library.set_lyrics_alignment(
+                song.id, [b.number for b in bars],
+                [len((field.value or "").split()) for field in fields],
+            )
+            self._alignment = None
+            self.state.editing = False
+            self.page.pop_dialog()
+            if self.state.current is song and self.state.mode == CHART:
+                self.show_content()
+            self.page.update()
+
+        rows: list[ft.Control] = []
+        for index, (bar, part) in enumerate(zip(bars, chunks(words, counts))):
+            field = ft.TextField(
+                value=" ".join(part), dense=True, text_size=13, expand=True,
+                content_padding=ft.Padding.symmetric(horizontal=8, vertical=6),
+                on_focus=lambda e, i=index: self._align_focus(i),
+                on_blur=lambda e, i=index: self._align_blur(i),
+                on_selection_change=lambda e, i=index: self._align_selection(i, e),
+            )
+            fields.append(field)
+            rows.append(ft.Row([
+                ft.Container(
+                    ft.Text(label(bar), size=12, color=ft.Colors.ON_SURFACE_VARIANT,
+                            no_wrap=True, overflow=ft.TextOverflow.ELLIPSIS),
+                    width=190),
+                field,
+            ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER))
+        note = ft.Text(
+            "Move whole words between the bars to line them up with the tune. Enter splits at "
+            "the cursor and pushes the later bars forward (at a bar's start it leaves an empty "
+            "bar); Backspace/Delete at a bar's edges join it with a neighbour and pull the later "
+            "bars back. The last bar takes the overflow, and the words stay as they are on the "
+            "Lyrics page.",
+            size=12, color=ft.Colors.ON_SURFACE_VARIANT)
+        width = min(880, max(320, (self.page.width or 900) - 160))
+        editor = ft.Column(rows, scroll=ft.ScrollMode.AUTO, height=440, spacing=6, tight=True)
+        dialog = ft.AlertDialog(
+            title=ft.Text(f"Lyrics alignment · {song.title}"),
+            content=ft.Container(ft.Column([note, editor, error], spacing=8, tight=True),
+                                 width=width),
+            actions=[
+                ft.TextButton("Auto-align",
+                              on_click=lambda e: refill(spread_words(len(words), len(bars)))),
+                ft.TextButton("Cancel", on_click=close),
+                ft.FilledButton("Save", on_click=save),
+            ],
+            on_dismiss=dismiss,
+        )
+        self._alignment = {"fields": fields, "focused": None, "sel": {}, "error": error}
+        self.state.editing = True
+        self.page.show_dialog(dialog)
+
+    # -- keyboard editing across bar boundaries in the alignment editor -----
+    def _align_focus(self, index: int) -> None:
+        if self._alignment is not None:
+            self._alignment["focused"] = index
+
+    def _align_blur(self, index: int) -> None:
+        """The caret left the bars (for a button or the dialog), so keys aren't lyrics keys."""
+        if self._alignment is not None and self._alignment.get("focused") == index:
+            self._alignment["focused"] = None
+
+    def _align_selection(self, index: int, e) -> None:
+        if self._alignment is not None:
+            self._alignment["sel"][index] = e.selection
+
+    def _align_caret(self, index: int, field: ft.TextField) -> tuple[bool, int]:
+        """(is a caret rather than a range, caret position) for a bar's field."""
+        sel = self._alignment["sel"].get(index) if self._alignment else None
+        if sel is None:
+            sel = field.selection
+        text = field.value or ""
+        if sel is None:
+            return True, len(text)
+        if sel.base_offset != sel.extent_offset:
+            return False, 0  # a selection: let the text field handle the key normally
+        return True, min(sel.base_offset, len(text))
+
+    async def _align_move_focus(self, fields: list[ft.TextField], index: int, caret: int) -> None:
+        """Put the caret back in the right field after a split or join."""
+        if self._alignment is None:
+            return
+        selection = ft.TextSelection(caret, caret)
+        self._alignment["focused"] = index
+        self._alignment["sel"][index] = selection
+        self._alignment["error"].value = ""
+        await fields[index].focus()
+        fields[index].selection = selection
+        self.page.update()
+
+    async def _align_key(self, e: ft.KeyboardEvent) -> bool:
+        """Enter splits a bar, Backspace/Delete join it with a neighbour.
+
+        Splitting pushes the later bars forward and joining pulls them back, so
+        a gap only ends up where the user asked for it (at the start of a bar)
+        or at the end of the chart, never in the middle of the lyrics.
+        """
+        ed = self._alignment
+        if ed is None or ed.get("focused") is None:
+            return False
+        index = ed["focused"]
+        fields = ed["fields"]
+        field = fields[index]
+        text = field.value or ""
+        collapsed, caret = self._align_caret(index, field)
+        if not collapsed:
+            return False  # a selected range: Backspace/Delete should just delete it
+        lines = [f.value or "" for f in fields]
+
+        def apply(new_lines: list[str]) -> None:
+            for f, value in zip(fields, new_lines):
+                f.value = value
+
+        if e.key == "Enter":
+            _, after = split_words(text, caret)
+            if not after or index + 1 >= len(fields):
+                return False
+            apply(split_bars(lines, index, caret))
+            await self._align_move_focus(fields, index + 1, 0)
+            return True
+        if e.key == "Backspace":
+            if caret != 0 or index == 0:
+                return False
+            before_text = (fields[index - 1].value or "").rstrip()
+            apply(join_bars(lines, index))
+            caret_in_previous = len(before_text) + (1 if before_text and text.strip() else 0)
+            await self._align_move_focus(fields, index - 1, caret_in_previous)
+            return True
+        if e.key == "Delete":
+            if caret != len(text) or index + 1 >= len(fields):
+                return False
+            apply(join_bars(lines, index + 1))
+            await self._align_move_focus(fields, index, len(text.rstrip()))
+            return True
+        return False
+
+    def _bar_cell(self, bar: ChartBar, size: float, lyric: str = "") -> ft.Control:
         line = ft.Colors.ON_SURFACE
         faint = ft.Colors.ON_SURFACE_VARIANT
         thick = 4 if bar.final else 1.5
@@ -758,6 +984,10 @@ class TuneView:
             body = self._chord_row(bar, size)
 
         stack_rows: list[ft.Control] = [ft.Row(top_labels, spacing=6, height=20), body]
+        if lyric:
+            stack_rows.append(
+                ft.Text(lyric, size=max(10.0, size * 0.46), color=faint)
+            )
         if bar.directions:
             stack_rows.append(ft.Text(" · ".join(bar.directions), size=12, italic=True,
                                       color=faint, text_align=ft.TextAlign.RIGHT))
@@ -1114,6 +1344,8 @@ class TuneView:
 
     async def on_key(self, e: ft.KeyboardEvent) -> None:
         key = e.key
+        if self._alignment is not None and await self._align_key(e):
+            return  # Enter/Backspace/Delete at a bar edge split or join the bar
         if self.state.editing:
             return  # typing in the lyrics editor
         if self.state.search_focused:
