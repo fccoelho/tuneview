@@ -21,6 +21,7 @@ from .engraver import (
     split_chord,
 )
 from .library import Library, SongInfo, search
+from .lyrics import verses
 from .player import (
     PLAY_MODES,
     SWING,
@@ -35,7 +36,7 @@ from .player import (
 )
 from .scales import Mark, ScaleGuide, scale_guides, scale_marks
 
-SHEET, CHART = "sheet", "chart"
+SHEET, CHART, LYRICS = "sheet", "chart", "lyrics"
 ZOOM_STEPS = [30, 35, 40, 45, 50, 55, 60, 70, 80]
 SPEEDS = [0.5, 0.6, 0.75, 0.9, 1.0, 1.1, 1.25, 1.5]
 SIDEBAR_WIDTH = 330
@@ -88,6 +89,7 @@ class State:
     zoom: int = 45
     library_open: bool = True
     search_focused: bool = False
+    editing: bool = False  # the lyrics editor is open: keys are typing, not shortcuts
     render_token: int = 0
     speed: float = 1.0
     play_mode: str = "melody"  # see player.PLAY_MODES
@@ -176,6 +178,7 @@ class TuneView:
             segments=[
                 ft.Segment(value=SHEET, label=ft.Text("Sheet"), icon=ft.Icon(ft.Icons.MUSIC_NOTE)),
                 ft.Segment(value=CHART, label=ft.Text("Chords"), icon=ft.Icon(ft.Icons.GRID_VIEW)),
+                ft.Segment(value=LYRICS, label=ft.Text("Lyrics"), icon=ft.Icon(ft.Icons.LYRICS_OUTLINED)),
             ],
             show_selected_icon=False,
             on_change=self.on_mode,
@@ -482,7 +485,7 @@ class TuneView:
                         ),
                         ft.Text(
                             "Keys: / search · P play · Space pause · ↓ ↑ PgDn PgUp scroll · [ ] transpose · "
-                            "S sheet · C chords · G scales · L library · D dark",
+                            "S sheet · C chords · W lyrics · G scales · L library · D dark",
                             size=12,
                             color=ft.Colors.ON_SURFACE_VARIANT,
                         ),
@@ -505,6 +508,8 @@ class TuneView:
                                                   f"Couldn't engrave this leadsheet: {r.error}")]
         elif self.state.mode == SHEET:
             self.content.controls = self._sheet(r)
+        elif self.state.mode == LYRICS:
+            self.content.controls = self._lyrics(r)
         else:
             self.content.controls = self._chart(r)
         for i, control in enumerate(self.content.controls):  # heights, for scrolling
@@ -549,6 +554,66 @@ class TuneView:
                 )
             )
         return out
+
+    # ------------------------------------------------------------ lyrics view
+    def _lyrics(self, r: Rendered) -> list[ft.Control]:
+        text = self.library.lyrics(r.song.id)
+        edit = ft.FilledTonalButton("Edit lyrics" if text else "Add lyrics",
+                                    icon=ft.Icons.EDIT_OUTLINED if text else ft.Icons.ADD,
+                                    on_click=self.open_lyrics_editor)
+        out: list[ft.Control] = [ft.Row([edit], alignment=ft.MainAxisAlignment.END)]
+        if not text:
+            hint = "No lyrics yet. Add them to read them here in large print."
+            if r.song.has_lyrics:
+                hint += " (This leadsheet has lyrics under its melody: see Sheet.)"
+            out.append(self._notice(ft.Icons.LYRICS_OUTLINED, hint))
+            return out
+        size = self.state.zoom * 0.55  # lyrics follow the zoom setting, like the chord chart
+        blocks: list[ft.Control] = []
+        for verse in verses(text):
+            lines: list[ft.Control] = []
+            if verse.heading:
+                lines.append(ft.Text(verse.heading.upper(), size=size * 0.62, weight=ft.FontWeight.W_700,
+                                     color=ft.Colors.PRIMARY, style=ft.TextStyle(letter_spacing=1.5)))
+            lines += [ft.Text(line, size=size, selectable=True) for line in verse.lines]
+            blocks.append(ft.Column(lines, spacing=size * 0.18, tight=True))
+        out.append(ft.Row([ft.Container(ft.Column(blocks, spacing=size * 1.1, tight=True),
+                                        width=min(900.0, self._chart_width()),
+                                        padding=ft.Padding.symmetric(horizontal=8))],
+                          alignment=ft.MainAxisAlignment.CENTER))
+        return out
+
+    def open_lyrics_editor(self, e=None) -> None:
+        song = self.state.current
+        if song is None:
+            return
+        field = ft.TextField(
+            value=self.library.lyrics(song.id), multiline=True, min_lines=14, max_lines=22,
+            autofocus=True, text_size=15,
+            hint_text="Paste or type the lyrics. Leave a blank line between verses; "
+                      "a line like [Chorus] or Verse 2: on top of a verse becomes its heading.",
+        )
+
+        def close(save: bool):
+            def handler(e=None) -> None:
+                if save:
+                    self.library.set_lyrics(song.id, field.value or "")
+                self.state.editing = False
+                self.page.pop_dialog()
+                if save and self.state.current is song and self.state.mode == LYRICS:
+                    self.show_content()
+                self.page.update()
+            return handler
+
+        dialog = ft.AlertDialog(
+            title=ft.Text(f"Lyrics · {song.title}"),
+            content=ft.Container(field, width=640),
+            actions=[ft.TextButton("Cancel", on_click=close(False)),
+                     ft.FilledButton("Save", on_click=close(True))],
+            on_dismiss=lambda e: setattr(self.state, "editing", False),
+        )
+        self.state.editing = True
+        self.page.show_dialog(dialog)
 
     # ------------------------------------------------------------- chart view
     def _chart(self, r: Rendered) -> list[ft.Control]:
@@ -967,6 +1032,8 @@ class TuneView:
 
     async def on_key(self, e: ft.KeyboardEvent) -> None:
         key = e.key
+        if self.state.editing:
+            return  # typing in the lyrics editor
         if self.state.search_focused:
             if key == "Escape":
                 self.search_field.value = ""
@@ -995,6 +1062,8 @@ class TuneView:
             await self.set_mode(SHEET)
         elif key == "C":
             await self.set_mode(CHART)
+        elif key == "W":
+            await self.set_mode(LYRICS)
         elif key == "L":
             self.toggle_library()
         elif key == "D":

@@ -1,6 +1,6 @@
 import sqlite3
 
-from tuneview.library import Library, SongInfo, fold, search
+from tuneview.library import SCHEMA, Library, SongInfo, fold, search
 
 
 def song(id_, title, composer=""):
@@ -46,4 +46,39 @@ def test_create_replaces_legacy_schema(tmp_path):
     lib.create()
     assert lib.is_ready()
     tables = {r[0] for r in lib.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    assert tables == {"song"}
+    assert tables == {"song", "lyrics"}
+
+
+def test_lyrics_are_saved_and_survive_a_reimport(tmp_path, mini_path):
+    from tuneview.importer import import_folder
+
+    (tmp_path / "scores").mkdir()
+    (tmp_path / "scores" / "mini.musicxml").write_bytes(mini_path.read_bytes())
+    lib = Library(tmp_path / "lib.sqlite")
+    import_folder(tmp_path / "scores", lib, log=lambda *a: None)
+    song_id = lib.songs()[0].id
+    assert lib.lyrics(song_id) == ""
+    lib.set_lyrics(song_id, "  [Chorus]\nHello\n\n")
+    assert lib.lyrics(song_id) == "[Chorus]\nHello"
+    lib.set_lyrics(song_id, "Hello again")
+    assert lib.lyrics(song_id) == "Hello again"
+    import_folder(tmp_path / "scores", lib, log=lambda *a: None)  # running the import again
+    assert lib.lyrics(lib.songs()[0].id) == "Hello again"
+    lib.set_lyrics(song_id, "   ")  # blank deletes
+    assert lib.lyrics(song_id) == ""
+    assert lib.conn.execute("SELECT count(*) FROM lyrics").fetchone()[0] == 0
+
+
+def test_a_v2_library_gains_the_lyrics_table(tmp_path):
+    path = tmp_path / "v2.sqlite"
+    con = sqlite3.connect(path)
+    con.executescript(SCHEMA.split("-- Lyrics")[0])  # the song table alone
+    con.execute("INSERT INTO song (title, sha1, musicxml) VALUES ('Tune', 'abc', x'00')")
+    con.execute("PRAGMA user_version = 2")
+    con.commit()
+    con.close()
+    lib = Library(path)
+    assert lib.is_ready()
+    assert [s.title for s in lib.songs()] == ["Tune"]  # nothing lost
+    lib.set_lyrics(lib.songs()[0].id, "La la")
+    assert lib.lyrics(lib.songs()[0].id) == "La la"

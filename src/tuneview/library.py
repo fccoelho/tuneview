@@ -9,7 +9,7 @@ import zlib
 from dataclasses import dataclass
 from pathlib import Path
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3  # v3 added the lyrics table to v2
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS song (
@@ -30,6 +30,13 @@ CREATE TABLE IF NOT EXISTS song (
     source      TEXT NOT NULL DEFAULT '',
     sha1        TEXT NOT NULL UNIQUE,
     musicxml    BLOB NOT NULL
+);
+-- Lyrics typed in TuneView: the user's own work, so they are kept apart from the
+-- imported scores and keyed by the score's content, which survives a re-import.
+CREATE TABLE IF NOT EXISTS lyrics (
+    sha1        TEXT PRIMARY KEY,
+    text        TEXT NOT NULL,
+    updated     TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 """
 
@@ -80,10 +87,17 @@ class Library:
     def __init__(self, path: Path | str | None = None):
         self.path = Path(path) if path else default_db_path()
         self.conn = sqlite3.connect(self.path, check_same_thread=False)
+        if self._version() == 2:  # add the lyrics table; nothing else changed
+            self.conn.executescript(SCHEMA)
+            self.conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            self.conn.commit()
+
+    def _version(self) -> int:
+        return self.conn.execute("PRAGMA user_version").fetchone()[0]
 
     # -- writing -----------------------------------------------------------
     def create(self) -> None:
-        version = self.conn.execute("PRAGMA user_version").fetchone()[0]
+        version = self._version()
         if version not in (0, SCHEMA_VERSION):
             raise RuntimeError(f"{self.path} has schema v{version}; expected v{SCHEMA_VERSION}")
         if version == 0:
@@ -113,7 +127,7 @@ class Library:
 
     # -- reading -----------------------------------------------------------
     def is_ready(self) -> bool:
-        return self.conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        return self._version() == SCHEMA_VERSION
 
     def songs(self) -> list[SongInfo]:
         rows = self.conn.execute(
@@ -129,6 +143,30 @@ class Library:
         if row is None:
             raise KeyError(song_id)
         return zlib.decompress(row[0]).decode("utf-8")
+
+    # -- lyrics ------------------------------------------------------------
+    def lyrics(self, song_id: int) -> str:
+        """The song's lyrics as typed in TuneView, or ''."""
+        row = self.conn.execute(
+            "SELECT l.text FROM lyrics l JOIN song s ON s.sha1 = l.sha1 WHERE s.id = ?", (song_id,)
+        ).fetchone()
+        return row[0] if row else ""
+
+    def set_lyrics(self, song_id: int, text: str) -> None:
+        """Save the song's lyrics; blank text deletes them."""
+        row = self.conn.execute("SELECT sha1 FROM song WHERE id = ?", (song_id,)).fetchone()
+        if row is None:
+            raise KeyError(song_id)
+        text = text.strip()
+        if text:
+            self.conn.execute(
+                "INSERT INTO lyrics (sha1, text) VALUES (?, ?) ON CONFLICT (sha1)"
+                " DO UPDATE SET text = excluded.text, updated = CURRENT_TIMESTAMP",
+                (row[0], text),
+            )
+        else:
+            self.conn.execute("DELETE FROM lyrics WHERE sha1 = ?", (row[0],))
+        self.conn.commit()
 
 
 def search(songs: list[SongInfo], query: str) -> list[SongInfo]:

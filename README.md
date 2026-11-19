@@ -11,6 +11,9 @@ way you need to play it:
   the source has them), repeats, endings and D.S./coda marks.
 - **Chords**: a large-print chord chart, four bars per line, with chords placed
   on their beats. It's easy to read from a distance.
+- **Lyrics**: the words in large print. Add or edit them with the Lyrics
+  view's button: paste or type them, with a blank line between verses; a line
+  like `[Chorus]` or `Verse 2:` on top of a verse becomes its heading.
 - **Transposition** for B♭, E♭ and F instruments, plus any extra shift in
   semitones. The notation, the chord chart and the displayed key all follow it.
 - **Chord symbols**: Compact (the default) spells them the jazz way: `Cm7`,
@@ -56,6 +59,9 @@ uv run tuneview-import /path/to/musicxml    # searched recursively
 Identical files are imported once, and each sub-folder name becomes the tune's
 volume (e.g. `I`, `II`). Running the import again adds any new files.
 
+Lyrics you add in TuneView are saved in the same file, so back it up rather
+than deleting it to rebuild: running the import again keeps them.
+
 ## Run
 
 ```bash
@@ -76,7 +82,7 @@ uv run pytest                     # tests
 | `Home` | back to the top |
 | `]` `[` | transpose up / down a semitone |
 | `+` `-` | larger / smaller notation |
-| `S` / `C` | sheet / chord chart |
+| `S` / `C` / `W` | sheet / chord chart / lyrics |
 | `L` | show / hide the library |
 | `D` | dark / light |
 | `F11` | full screen (desktop) |
