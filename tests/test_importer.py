@@ -117,3 +117,24 @@ def test_import_files_from_the_app(tmp_path, mini_path):
     assert result.summary() == "Added 1 tune (1 already in the library, 2 couldn't be read)."
     assert ImportResult(added=[1, 2]).summary() == "Added 2 tunes."
     assert ImportResult().summary() == "Added 0 tunes."
+
+
+@pytest.mark.parametrize(
+    "title, composer, filename, expected",
+    [
+        ("Partitura sem título", "Compositor / arranjador", "Copacabana.mxl", "Copacabana"),
+        ("Untitled", "Composer / arranger", "Penny Lane.musicxml", "Penny Lane"),
+    ],
+)
+def test_placeholder_metadata_uses_the_file_name(tmp_path, title, composer, filename, expected):
+    data = f"""<score-partwise>
+      <movement-title>{title}</movement-title>
+      <identification><creator type="composer">{composer}</creator></identification>
+      <part-list><score-part id="P1"><part-name>Music</part-name></score-part></part-list>
+      <part id="P1"><measure number="1"><attributes><divisions>1</divisions></attributes>
+        <note><rest/><duration>1</duration></note></measure></part>
+    </score-partwise>""".encode()
+    path = tmp_path / filename
+    meta = parse_metadata(data, path)
+    assert meta["title"] == expected
+    assert meta["composer"] == ""

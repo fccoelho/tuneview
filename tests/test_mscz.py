@@ -108,6 +108,7 @@ def test_mscz_imports_into_the_library(tmp_path):
     stored = lib.musicxml(song.id)
     assert stored.startswith('<?xml') and "<score-partwise" in stored
     assert parse_metadata(stored.encode(), Path("Test Tune.mscz"))["chords"] == 2
+    assert lib.lyrics(song.id) == "Hello"  # adopted from the score on import
 
 
 def test_old_musescore_files_are_rejected_with_a_hint(tmp_path):
@@ -126,3 +127,16 @@ def test_find_scores_finds_musescore_files(tmp_path):
     (tmp_path / "three.musicxml").write_text("<score-partwise/>")
     (tmp_path / "notes.txt").write_text("not a score")
     assert [p.name for p in find_scores(tmp_path)] == ["one.mscz", "three.musicxml", "two.mscx"]
+
+
+def test_mscz_placeholder_metadata_uses_the_file_name(tmp_path):
+    placeholder = (MSCX.replace("Test Tune", "Partitura sem título")
+                   .replace("Test Composer", "Compositor / arranjador")
+                   .replace("Test Arranger", ""))
+    lib = Library(tmp_path / "lib.sqlite")
+    result = import_files([("Copacabana.mscz", mscz(placeholder))], lib)
+    assert result.added and not result.errors
+    [song] = lib.songs()
+    assert song.title == "Copacabana"
+    assert song.composer == ""
+    assert song.source == "Copacabana.mscz"

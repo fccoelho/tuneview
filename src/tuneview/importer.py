@@ -18,13 +18,37 @@ import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .library import Library, default_db_path
+from .library import Library, default_db_path, fold
+from .lyrics import extract_lyrics
 from .mscz import mscx_to_musicxml, mscz_to_musicxml
 
 MAJOR_KEYS = ["C♭", "G♭", "D♭", "A♭", "E♭", "B♭", "F", "C", "G", "D", "A", "E", "B", "F♯", "C♯"]
 MINOR_KEYS = ["A♭", "E♭", "B♭", "F", "C", "G", "D", "A", "E", "B", "F♯", "C♯", "G♯", "D♯", "A♯"]
 # "Arr. X", "arranged by X", "Arr: X" — but not words that merely start with "arr".
 ARRANGER_RE = re.compile(r"\barr(?:anged\b|\.|:|\b)\s*(?:by\b)?\s*:?\s*", re.I)
+
+# MuseScore and other editors ship these placeholder values when a score hasn't
+# been given a title or composer; the file name is more useful than the placeholder.
+GENERIC_TITLES = {
+    "untitled", "untitled score", "untitled document", "new score",
+    "partitura sem titulo", "partitura sem nome", "sem titulo",
+    "sans titre", "nouvelle partition", "ohne titel", "neue partitur",
+    "sin titulo", "nueva partitura", "senza titolo", "nuova partitura",
+    "sem titulo", "無題", "无标题",
+}
+GENERIC_COMPOSERS = {
+    "composer", "arranger", "composer arranger", "composer/arranger",
+    "compositor", "arranjador", "compositor arranjador", "compositor/arranjador",
+    "compositeur", "arrangeur", "compositeur arrangeur", "compositeur/arrangeur",
+    "komponist", "komponist arrangeur", "komponist/arrangeur",
+    "compositor arreglista", "compositor/arreglista",
+}
+
+
+def _plain(text: str) -> str:
+    """Lowercase, accent- and punctuation-free, for comparing placeholder values."""
+    text = fold(text)
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", text).split())
 
 
 def key_name(fifths: int, mode: str | None) -> str:
@@ -56,7 +80,8 @@ def parse_metadata(data: bytes, path: Path) -> dict:
         raise ValueError(f"unsupported MusicXML root <{root.tag}>")
 
     title = _text(root.find("movement-title")) or _text(root.find("work/work-title"))
-    title = title or path.stem
+    if not title or _plain(title) in GENERIC_TITLES or _plain(title) in GENERIC_COMPOSERS:
+        title = path.stem
     composer, arranger = "", ""
     for creator in root.iterfind("identification/creator"):
         kind = creator.get("type")
@@ -66,6 +91,10 @@ def parse_metadata(data: bytes, path: Path) -> dict:
         elif kind in (None, "composer") and not composer:
             composer, from_line = split_composer(creator.text or "")
             arranger = arranger or from_line
+    if _plain(composer) in GENERIC_COMPOSERS:
+        composer = ""
+    if _plain(arranger) in GENERIC_COMPOSERS:
+        arranger = ""
     copyright_ = _text(root.find("identification/rights"))
 
     parts = root.findall("part")
@@ -158,6 +187,15 @@ class ImportResult:
         return text + (f" ({', '.join(notes)})" if notes else "") + "."
 
 
+def _adopt_embedded_lyrics(library: Library, song_id: int, musicxml: bytes) -> None:
+    """Use the lyrics already written under the melody when TuneView has none."""
+    if library.lyrics(song_id):
+        return
+    embedded = extract_lyrics(musicxml)
+    if embedded:
+        library.set_lyrics(song_id, embedded)
+
+
 def import_score(library: Library, data: bytes, name: str, result: ImportResult, *,
                  collection: str = "") -> None:
     """Add one score's file contents to the library, recording the outcome in result.
@@ -179,9 +217,14 @@ def import_score(library: Library, data: bytes, name: str, result: ImportResult,
     meta["source"] = name
     sha1 = hashlib.sha1(data).hexdigest()
     if library.add(meta, data, sha1):
-        result.added.append(library.song_id(sha1))
+        song_id = library.song_id(sha1)
+        result.added.append(song_id)
     else:
+        song_id = library.song_id(sha1)
         result.duplicates += 1
+    # Lyrics already under the melody are much more useful on the Lyrics page
+    # than only as engraving, so adopt them unless TuneView has lyrics already.
+    _adopt_embedded_lyrics(library, song_id, data)
 
 
 def import_folder(folder: Path, library: Library, log=print) -> tuple[int, int, list[str]]:

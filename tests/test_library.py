@@ -2,11 +2,12 @@ import sqlite3
 
 import pytest
 
-from tuneview.library import SCHEMA, Library, SongInfo, fold, search
+from tuneview.library import SCHEMA, Library, SongInfo, default_db_path, fold, search
 
 
-def song(id_, title, composer=""):
-    return SongInfo(id_, title, composer, "", "", "", "C", "4/4", None, 8, 8, True, False, 1)
+def song(id_, title, composer="", source=""):
+    return SongInfo(id_, title, composer, "", "", "", "C", "4/4", None, 8, 8, True, False, 1,
+                    source=source)
 
 
 SONGS = [
@@ -59,7 +60,7 @@ def test_lyrics_are_saved_and_survive_a_reimport(tmp_path, mini_path):
     lib = Library(tmp_path / "lib.sqlite")
     import_folder(tmp_path / "scores", lib, log=lambda *a: None)
     song_id = lib.songs()[0].id
-    assert lib.lyrics(song_id) == ""
+    assert lib.lyrics(song_id) == "Hel lo"  # extracted from the score on import
     lib.set_lyrics(song_id, "  [Chorus]\nHello\n\n")
     assert lib.lyrics(song_id) == "[Chorus]\nHello"
     lib.set_lyrics(song_id, "Hello again")
@@ -130,3 +131,52 @@ def test_chart_lyric_alignment_is_saved_and_cleared_with_the_words(tmp_path, min
         lib.set_lyrics_alignment(song_id, ["m1", "m2"], [-1, 1])
     with pytest.raises(KeyError):
         lib.set_lyrics_alignment(9999, [], [])
+
+
+def test_search_matches_the_source_file_name():
+    s = song(6, "Partitura sem título", source="Copacabana.mscz")
+    assert search([s], "copacabana") == [s]
+    assert search(SONGS, "café") == [s for s in SONGS if s.id == 4]  # accents still work
+
+
+def test_songs_report_whether_lyrics_are_stored(tmp_path, mini_path):
+    from tuneview.importer import import_folder
+
+    (tmp_path / "scores").mkdir()
+    (tmp_path / "scores" / "mini.musicxml").write_bytes(mini_path.read_bytes())
+    lib = Library(tmp_path / "lib.sqlite")
+    import_folder(tmp_path / "scores", lib, log=lambda *_: None)
+    song_id = lib.songs()[0].id
+    assert lib.songs()[0].stored_lyrics is True  # extracted from the score on import
+    lib.set_lyrics(song_id, "")
+    assert lib.songs()[0].stored_lyrics is False
+    lib.set_lyrics(song_id, "Hello")
+    assert lib.songs()[0].stored_lyrics is True
+
+
+def test_reimport_refills_lyrics_missing_from_an_older_import(tmp_path, mini_path):
+    from tuneview.importer import import_folder
+
+    (tmp_path / "scores").mkdir()
+    (tmp_path / "scores" / "mini.musicxml").write_bytes(mini_path.read_bytes())
+    lib = Library(tmp_path / "lib.sqlite")
+    import_folder(tmp_path / "scores", lib, log=lambda *_: None)
+    song_id = lib.songs()[0].id
+    lib.set_lyrics(song_id, "")
+    assert lib.lyrics(song_id) == ""
+    import_folder(tmp_path / "scores", lib, log=lambda *_: None)  # same file: a duplicate
+    assert lib.songs()[0].stored_lyrics is True
+    assert lib.lyrics(song_id) == "Hel lo"
+
+
+def test_default_db_path_can_be_overridden(monkeypatch, tmp_path):
+    chosen = tmp_path / "my tunes.sqlite"
+    monkeypatch.setenv("TUNEVIEW_DB", str(chosen))
+    assert default_db_path() == chosen
+
+
+def test_library_creates_its_data_directory(tmp_path):
+    path = tmp_path / "nested" / "library.sqlite"
+    lib = Library(path)
+    lib.create()
+    assert path.parent.is_dir() and path.is_file()

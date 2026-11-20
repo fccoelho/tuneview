@@ -7,6 +7,7 @@ the top of a verse is shown as its heading.
 from __future__ import annotations
 
 import re
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 
 # "[Anything]" is a heading; "Name:" only for usual section names, so a verse
@@ -122,3 +123,59 @@ def join_bars(bars: list[str], index: int) -> list[str]:
         lines[j] = lines[j + 1]
     lines[-1] = ""
     return lines
+
+
+def _verse_text(entries: list[tuple[str, str]]) -> str:
+    """Join lyric syllables ('Hel' + 'lo') into words; 'single' entries are whole words."""
+    words: list[str] = []
+    current = ""
+    for syllabic, text in entries:
+        text = " ".join(text.split())
+        if not text:
+            continue
+        kind = syllabic.strip().lower()
+        if kind == "begin":
+            if current:
+                words.append(current)
+            current = text
+        elif kind == "middle":
+            current += text
+        elif kind == "end":
+            current += text
+            words.append(current)
+            current = ""
+        else:  # single, or no <syllabic>
+            if current:
+                words.append(current)
+                current = ""
+            words.append(text)
+    if current:
+        words.append(current)
+    return " ".join(words)
+
+
+def extract_lyrics(musicxml: str | bytes) -> str:
+    """Lyrics embedded in a MusicXML score, with hyphenated syllables joined.
+
+    Lyrics are grouped by MusicXML verse number (number="1", "2", ...) and
+    separated by a blank line, like the text typed on the Lyrics page.  The
+    part with the most lyrics wins, so a melody part is preferred over
+    accompaniment staves.  Returns '' when the score has no lyrics.
+    """
+    try:
+        root = ET.fromstring(musicxml)
+    except ET.ParseError:
+        return ""
+    parts = root.findall("part") or [root]
+    part = max(parts, key=lambda p: len(p.findall(".//lyric")), default=None)
+    if part is None or not part.findall(".//lyric"):
+        return ""
+    verses: dict[str, list[tuple[str, str]]] = {}
+    for lyric in part.iter("lyric"):
+        text = lyric.findtext("text") or ""
+        if not text.strip():
+            continue
+        number = lyric.get("number") or "1"
+        verses.setdefault(number, []).append((lyric.findtext("syllabic") or "single", text))
+    blocks = [_verse_text(entries) for entries in verses.values()]
+    return "\n\n".join(block for block in blocks if block)

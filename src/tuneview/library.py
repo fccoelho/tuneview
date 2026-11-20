@@ -6,6 +6,7 @@ import functools
 import json
 import os
 import sqlite3
+import sys
 import threading
 import unicodedata
 import zlib
@@ -52,12 +53,32 @@ CREATE TABLE IF NOT EXISTS lyrics_alignment (
 """
 
 
+def _user_data_dir() -> Path:
+    """Where an installed TuneView keeps its library (per platform convention)."""
+    if os.name == "nt":
+        base = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
+    elif sys.platform == "darwin":
+        base = Path.home() / "Library" / "Application Support"
+    else:
+        base = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share")
+    return base / "tuneview"
+
+
 def default_db_path() -> Path:
-    """The library file: $TUNEVIEW_DB, else leadsheets.sqlite at the project root."""
+    """The library file: $TUNEVIEW_DB, or the right place for how TuneView was installed.
+
+    A source checkout keeps leadsheets.sqlite at the project root (as before);
+    an installed tool uses the platform data directory, which survives upgrading
+    or removing the tool. Set TUNEVIEW_DB to choose a file explicitly.
+    """
     env = os.environ.get("TUNEVIEW_DB")
     if env:
         return Path(env).expanduser()
-    return Path(__file__).resolve().parents[2] / "leadsheets.sqlite"
+    package = Path(__file__).resolve()
+    project = package.parents[2]
+    if (project / "pyproject.toml").is_file() and (project / "src" / "tuneview").is_dir():
+        return project / "leadsheets.sqlite"
+    return _user_data_dir() / "leadsheets.sqlite"
 
 
 def fold(text: str) -> str:
@@ -82,15 +103,17 @@ class SongInfo:
     has_melody: bool
     has_lyrics: bool
     parts: int
+    source: str = ""
+    stored_lyrics: bool = False
 
     @property
     def search_text(self) -> str:
-        return fold(f"{self.title} {self.composer}")
+        return fold(f"{self.title} {self.composer} {self.source}")
 
 
 _INFO_COLUMNS = (
     "id, title, composer, arranger, copyright, collection, key, time, tempo, "
-    "measures, chords, has_melody, has_lyrics, parts"
+    "measures, chords, has_melody, has_lyrics, parts, source"
 )
 
 
@@ -106,6 +129,7 @@ def _locked(method):
 class Library:
     def __init__(self, path: Path | str | None = None):
         self.path = Path(path) if path else default_db_path()
+        self.path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(self.path, check_same_thread=False)
         self._lock = threading.RLock()
         if self._version() in (2, 3):  # add the tables introduced in v3 and v4
@@ -162,10 +186,12 @@ class Library:
     @_locked
     def songs(self) -> list[SongInfo]:
         rows = self.conn.execute(
-            f"SELECT {_INFO_COLUMNS} FROM song ORDER BY title COLLATE NOCASE"
+            f"SELECT {_INFO_COLUMNS}, (l.sha1 IS NOT NULL) FROM song"
+            " LEFT JOIN lyrics l ON l.sha1 = song.sha1 ORDER BY song.title COLLATE NOCASE"
         ).fetchall()
         return [
-            SongInfo(*r[:11], has_melody=bool(r[11]), has_lyrics=bool(r[12]), parts=r[13])
+            SongInfo(*r[:11], has_melody=bool(r[11]), has_lyrics=bool(r[12]), parts=r[13],
+                     source=r[14], stored_lyrics=bool(r[15]))
             for r in rows
         ]
 
@@ -248,10 +274,11 @@ class Library:
 
 
 def search(songs: list[SongInfo], query: str) -> list[SongInfo]:
-    """Songs whose title or composer contain every word of the query, best first.
+    """Songs whose title, composer or source file contain every word of the query.
 
     Titles that start with the query rank first, then titles containing it, then
-    titles containing all its words, then composer matches; ties keep library order.
+    titles containing all its words, then composer/source matches; ties keep
+    library order.
     """
     q = " ".join(fold(query).split())
     words = q.split()

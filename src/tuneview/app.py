@@ -542,14 +542,21 @@ class TuneView:
             details = [d for d in (s.composer, s.key, s.time) if d]
             if titles[s.title.casefold()] > 1 and s.collection:
                 details.append(f"Vol. {s.collection}")
+            title_controls: list[ft.Control] = [
+                ft.Text(s.title, weight=ft.FontWeight.W_500, max_lines=1,
+                        overflow=ft.TextOverflow.ELLIPSIS)
+            ]
+            if s.has_lyrics or s.stored_lyrics:  # embedded in the score, or added here
+                title_controls.append(
+                    ft.Icon(ft.Icons.LYRICS_OUTLINED, size=16, tooltip="Has lyrics",
+                            color=ft.Colors.ON_SURFACE_VARIANT)
+                )
             tiles.append(
                 ft.ListTile(
-                    title=ft.Text(s.title, weight=ft.FontWeight.W_500, max_lines=1,
-                                  overflow=ft.TextOverflow.ELLIPSIS),
+                    title=ft.Row(title_controls, spacing=6, tight=True,
+                                 vertical_alignment=ft.CrossAxisAlignment.CENTER),
                     subtitle=ft.Text(" · ".join(details), size=12, max_lines=1,
                                      overflow=ft.TextOverflow.ELLIPSIS),
-                    trailing=ft.Icon(ft.Icons.LYRICS_OUTLINED, size=18, tooltip="Has lyrics")
-                    if s.has_lyrics else None,
                     selected=s.id == current,
                     dense=True,
                     shape=ft.RoundedRectangleBorder(radius=12),

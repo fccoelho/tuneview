@@ -1,8 +1,8 @@
 import pytest
 
 from tuneview.lyrics import (
-    Verse, chunks, heading_of, join_bars, join_words, lyric_words, spread_words, split_bars,
-    split_words, verses,
+    Verse, chunks, extract_lyrics, heading_of, join_bars, join_words, lyric_words, spread_words,
+    split_bars, split_words, verses,
 )
 
 
@@ -87,3 +87,16 @@ def test_join_bars_shifts_the_later_bars_back():
     assert join_bars(bars, 4) == bars
     assert _all_words(join_bars(bars, 1)) == _all_words(bars)
     assert _all_words(join_bars(bars, 3)) == _all_words(bars)
+
+
+def test_extract_lyrics_joins_syllables_and_splits_verses():
+    xml = """<score-partwise><part-list><score-part id="P1"><part-name>Voice</part-name>
+      </score-part></part-list><part id="P1"><measure number="1">
+      <note><lyric number="1"><syllabic>begin</syllabic><text>Hel</text></lyric></note>
+      <note><lyric number="1"><syllabic>end</syllabic><text>lo</text></lyric></note>
+      <note><lyric number="1"><syllabic>single</syllabic><text>world</text></lyric></note>
+      <note><lyric number="2"><text>Bonjour</text></lyric></note>
+    </measure></part></score-partwise>"""
+    assert extract_lyrics(xml) == "Hello world\n\nBonjour"
+    assert extract_lyrics("<score-partwise><part id='P1'/></score-partwise>") == ""
+    assert extract_lyrics("not xml") == ""
