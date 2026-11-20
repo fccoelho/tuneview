@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- App icon: the Material "music_note" glyph (Google Material Icons,
+     Apache License 2.0 — see icons/ATTRIBUTION.md) on TuneView indigo. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512"><rect width="512" height="512" rx="112.64" fill="#3f51b5"/><g transform="translate(64 64) scale(16)"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z" fill="#ffffff"/></g></svg>

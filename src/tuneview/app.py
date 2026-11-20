@@ -64,6 +64,9 @@ SHEET_PAD = 12  # vertical padding around each engraved page
 NARROW = 900  # below this width the library and the music take turns
 SEED_COLOR = "#3f51b5"
 
+# Static artwork (icons) shipped inside the package.
+_PACKAGE_ASSETS = Path(__file__).resolve().parent / "assets"
+
 # The web server serves these files to the browser; audio is written here on play.
 _WEB_ASSETS: Path | None = None
 
@@ -74,6 +77,11 @@ def _web_assets() -> Path:
     if _WEB_ASSETS is None:
         _WEB_ASSETS = Path(tempfile.mkdtemp(prefix="tuneview-web-"))
         (_WEB_ASSETS / "audio").mkdir(parents=True, exist_ok=True)
+        # Flet serves the assets directory before its own web files, so these
+        # override the stock favicon, manifest icons and Apple touch icon.
+        for name in ("favicon.png", "icon.png", "manifest.json"):
+            shutil.copyfile(_PACKAGE_ASSETS / name, _WEB_ASSETS / name)
+        shutil.copytree(_PACKAGE_ASSETS / "icons", _WEB_ASSETS / "icons")
         atexit.register(shutil.rmtree, _WEB_ASSETS, ignore_errors=True)
     return _WEB_ASSETS
 
@@ -284,6 +292,10 @@ class TuneView:
     def _build(self) -> None:
         p = self.page
         p.title = "TuneView"
+        if not p.web:  # the browser uses the favicon served from the asset directory
+            icon = _PACKAGE_ASSETS / "icon.ico"
+            if icon.exists():
+                p.window.icon = str(icon)
         p.theme = ft.Theme(color_scheme_seed=SEED_COLOR)
         p.dark_theme = ft.Theme(color_scheme_seed=SEED_COLOR)
         p.theme_mode = ft.ThemeMode.SYSTEM
@@ -311,7 +323,7 @@ class TuneView:
         )
         self.count_text = ft.Text(size=12, color=ft.Colors.ON_SURFACE_VARIANT)
         self.file_picker = ft.FilePicker()  # a service: registers itself with the page
-        add_tip = "Add MusicXML files (.musicxml, .xml, .mxl) to the library"
+        add_tip = "Add scores (.musicxml, .xml, .mxl, .mscz, .mscx) to the library"
         if p.web:  # browsers can't pick folders
             self.add_button = ft.IconButton(ft.Icons.LIBRARY_ADD_OUTLINED, tooltip=add_tip,
                                             on_click=self.add_files)
@@ -552,7 +564,7 @@ class TuneView:
     # ------------------------------------------------------- adding to library
     async def add_files(self, e=None) -> None:
         files = await self.file_picker.pick_files(
-            dialog_title="Add MusicXML files to the library",
+            dialog_title="Add scores to the library",
             file_type=ft.FilePickerFileType.CUSTOM,
             allowed_extensions=[x.lstrip(".") for x in SCORE_EXTENSIONS],
             allow_multiple=True, with_data=True,
@@ -574,7 +586,7 @@ class TuneView:
 
     async def add_folder(self, e=None) -> None:
         folder = await self.file_picker.get_directory_path(
-            dialog_title="Add a folder of MusicXML files (sub-folders included)")
+            dialog_title="Add a folder of scores (sub-folders included)")
         if not folder:
             return
         root = Path(folder)
@@ -717,8 +729,8 @@ class TuneView:
                         ft.Icon(ft.Icons.PIANO, size=72, color=ft.Colors.PRIMARY),
                         ft.Text("Pick a tune from the library" if self.state.songs else
                                 "Your library is empty", size=24, weight=ft.FontWeight.W_500),
-                        ft.Text("Add MusicXML leadsheets with the add button above the "
-                                "library (.musicxml, .xml or .mxl).",
+                        ft.Text("Add MusicXML or MuseScore scores with the add button above "
+                                "the library (.musicxml, .xml, .mxl, .mscz).",
                                 color=ft.Colors.ON_SURFACE_VARIANT, visible=not self.state.songs),
                         ft.Text(
                             f"{len(self.state.songs)} leadsheets · melody, chords and lyrics, "

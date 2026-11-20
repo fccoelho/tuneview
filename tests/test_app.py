@@ -2,7 +2,9 @@ import socket
 
 import numpy as np
 
-from tuneview.app import _announce_web, _audio_asset, _lan_address, _web_assets, _web_port
+from tuneview.app import (
+    _PACKAGE_ASSETS, _announce_web, _audio_asset, _lan_address, _web_assets, _web_port,
+)
 
 
 def test_web_port_uses_flet_port_first(monkeypatch):
@@ -45,3 +47,22 @@ def test_audio_asset_is_a_content_addressed_wav():
     path = _web_assets() / url
     assert path.exists() and path.stat().st_size > 44
     assert _audio_asset(pcm) == url  # the same sound reuses the same file
+
+
+def test_packaged_app_icons_are_shipped():
+    for name in ("favicon.png", "icon.png", "icon.ico", "manifest.json"):
+        path = _PACKAGE_ASSETS / name
+        assert path.exists() and path.stat().st_size > 0
+    for name in ("icon-192.png", "icon-512.png", "icon-maskable-192.png",
+                 "icon-maskable-512.png", "apple-touch-icon-192.png",
+                 "loading-animation.png"):
+        assert (_PACKAGE_ASSETS / "icons" / name).exists()
+    assert (_PACKAGE_ASSETS / "icons" / "LICENSE-APACHE-2.0.txt").exists()
+
+
+def test_web_assets_override_flet_icons():
+    assets = _web_assets()
+    assert (assets / "favicon.png").read_bytes() == (
+        _PACKAGE_ASSETS / "favicon.png").read_bytes()
+    assert (assets / "icons" / "icon-192.png").read_bytes() == (
+        _PACKAGE_ASSETS / "icons" / "icon-192.png").read_bytes()

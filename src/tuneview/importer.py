@@ -1,6 +1,9 @@
-"""Import MusicXML leadsheets (.musicxml, .xml or compressed .mxl) into the TuneView library.
+"""Import leadsheets into the TuneView library.
 
-Usage: tuneview-import /path/to/musicxml [--db leadsheets.sqlite]
+MusicXML (.musicxml, .xml or compressed .mxl) is used as written; MuseScore 3/4
+scores (.mscz and .mscx) are converted to MusicXML first.
+
+Usage: tuneview-import /path/to/scores [--db leadsheets.sqlite]
 """
 
 from __future__ import annotations
@@ -16,6 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .library import Library, default_db_path
+from .mscz import mscx_to_musicxml, mscz_to_musicxml
 
 MAJOR_KEYS = ["C♭", "G♭", "D♭", "A♭", "E♭", "B♭", "F", "C", "G", "D", "A", "E", "B", "F♯", "C♯"]
 MINOR_KEYS = ["A♭", "E♭", "B♭", "F", "C", "G", "D", "A", "E", "B", "F♯", "C♯", "G♯", "D♯", "A♯"]
@@ -55,9 +59,13 @@ def parse_metadata(data: bytes, path: Path) -> dict:
     title = title or path.stem
     composer, arranger = "", ""
     for creator in root.iterfind("identification/creator"):
-        if creator.get("type") in (None, "composer"):
-            composer, arranger = split_composer(creator.text or "")
-            break
+        kind = creator.get("type")
+        if kind == "arranger":
+            if not arranger:
+                arranger = _text(creator)
+        elif kind in (None, "composer") and not composer:
+            composer, from_line = split_composer(creator.text or "")
+            arranger = arranger or from_line
     copyright_ = _text(root.find("identification/rights"))
 
     parts = root.findall("part")
@@ -101,10 +109,11 @@ def parse_metadata(data: bytes, path: Path) -> dict:
     }
 
 
-SCORE_EXTENSIONS = (".musicxml", ".xml", ".mxl")
+SCORE_EXTENSIONS = (".musicxml", ".xml", ".mxl", ".mscz", ".mscx")
 
 
 def find_scores(folder: Path) -> list[Path]:
+    """Every supported score file under folder."""
     return sorted(
         p for p in folder.rglob("*") if p.suffix.lower() in SCORE_EXTENSIONS and p.is_file()
     )
@@ -154,9 +163,14 @@ def import_score(library: Library, data: bytes, name: str, result: ImportResult,
     """Add one score's file contents to the library, recording the outcome in result.
     name is the file name, used for the format and as a fallback title."""
     path = Path(name)
+    suffix = path.suffix.lower()
     try:
-        if path.suffix.lower() == ".mxl":
+        if suffix == ".mxl":
             data = unpack_mxl(data)
+        elif suffix == ".mscz":
+            data = mscz_to_musicxml(data)
+        elif suffix == ".mscx":
+            data = mscx_to_musicxml(data)
         meta = parse_metadata(data, path)
     except (ET.ParseError, ValueError) as exc:
         result.errors.append(f"{name}: {exc}")
@@ -171,7 +185,7 @@ def import_score(library: Library, data: bytes, name: str, result: ImportResult,
 
 
 def import_folder(folder: Path, library: Library, log=print) -> tuple[int, int, list[str]]:
-    """Import every MusicXML file under folder. Returns (added, duplicates, errors)."""
+    """Import every score under folder. Returns (added, duplicates, errors)."""
     result = import_paths(find_scores(folder), library, root=folder)
     log(f"Imported {len(result.added)} leadsheets ({result.duplicates} duplicates skipped,"
         f" {len(result.errors)} errors).")
@@ -209,7 +223,8 @@ def import_files(files: list[tuple[str, bytes]], library: Library) -> ImportResu
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("folder", type=Path, help="folder searched recursively for .xml/.musicxml")
+    parser.add_argument("folder", type=Path,
+                        help="folder searched recursively for MusicXML or MuseScore scores")
     parser.add_argument("--db", type=Path, default=None, help=f"library file (default {default_db_path()})")
     args = parser.parse_args(argv)
     if not args.folder.is_dir():

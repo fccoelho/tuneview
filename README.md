@@ -50,6 +50,10 @@ way you need to play it:
 Built with [Flet](https://flet.dev) 1.x, with [Verovio](https://www.verovio.org)
 for engraving.
 
+The app icon uses the **music_note** glyph from
+[Google Material Icons](https://github.com/google/material-design-icons),
+licensed under the Apache License 2.0 (see `src/tuneview/assets/icons/`).
+
 ## Setup
 
 Dependencies are managed with [uv](https://docs.astral.sh/uv/):
@@ -60,15 +64,17 @@ uv sync
 
 ### Build the library
 
-TuneView keeps MusicXML leadsheets (`.musicxml`, `.xml` or compressed `.mxl`)
-in a single SQLite file, `leadsheets.sqlite` at the project root (override with
-`TUNEVIEW_DB`). It's created empty the first time you run TuneView.
+TuneView keeps leadsheets in a single SQLite file, `leadsheets.sqlite` at the
+project root (override with `TUNEVIEW_DB`). It accepts MusicXML (`.musicxml`,
+`.xml` or compressed `.mxl`) and MuseScore 3/4 scores (`.mscz`/`.mscx`,
+converted to MusicXML on import). It's created empty the first time you run
+TuneView.
 
 Add music from the app with the add button above the library: pick files, or
 (on the desktop) a whole folder. Or import a folder from the command line:
 
 ```bash
-uv run tuneview-import /path/to/musicxml    # searched recursively
+uv run tuneview-import /path/to/scores    # searched recursively
 ```
 
 Identical files are added once, so adding a folder again only picks up new
