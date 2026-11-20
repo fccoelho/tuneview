@@ -16,9 +16,11 @@ way you need to play it:
   cursor and pushes the later bars forward (at the bar's start it leaves an empty
   bar); `Backspace`/`Delete` at a bar's start/end join it with the neighbouring
   bar and pull the later bars back. It's easy to read from a distance.
-- **Lyrics**: the words in large print. Add or edit them with the Lyrics
-  view's button: paste or type them, with a blank line between verses; a line
-  like `[Chorus]` or `Verse 2:` on top of a verse becomes its heading.
+- **Lyrics**: the words in large print. Lyrics already written under the melody
+  in an imported score are extracted automatically (and re-read if a tune is
+  imported again); otherwise add or edit them with the Lyrics view's button:
+  paste or type them, with a blank line between verses; a line like `[Chorus]`
+  or `Verse 2:` on top of a verse becomes its heading.
 
   ![The Lyrics view: the words in large print](docs/screenshot-lyrics.png)
 
@@ -44,7 +46,7 @@ way you need to play it:
 
   ![Improvisation scales drawn over the bar being played, with their names in the transport bar](docs/screenshot-scales.png)
 
-- Instant search across title and composer, light and dark themes, and keyboard
+- Instant search across title, composer and source file name, light and dark themes, and keyboard
   control that works with page-turner pedals.
 
 Built with [Flet](https://flet.dev) 1.x, with [Verovio](https://www.verovio.org)
@@ -52,7 +54,28 @@ for engraving.
 
 The app icon uses the **music_note** glyph from
 [Google Material Icons](https://github.com/google/material-design-icons),
-licensed under the Apache License 2.0 (see `src/tuneview/assets/icons/`).
+licensed under the Apache License 2.0 (see `src/tuneview/assets/icons/`); that
+attribution applies to the icon files only.
+
+## Install
+
+Once published to PyPI, install TuneView as an isolated command with
+[`uv tool install`](https://docs.astral.sh/uv/guides/tools/):
+
+```bash
+uv tool install tuneview
+```
+
+That puts `tuneview` and `tuneview-import` on your `PATH`. From a checkout or a
+git URL instead:
+
+```bash
+uv tool install --editable .                                  # this checkout
+uv tool install "git+https://github.com/fccoelho/tuneview"    # from GitHub
+```
+
+Run `tuneview` for the desktop window, or `TUNEVIEW_WEB=1 tuneview` in the
+browser.
 
 ## Setup
 
@@ -64,8 +87,10 @@ uv sync
 
 ### Build the library
 
-TuneView keeps leadsheets in a single SQLite file, `leadsheets.sqlite` at the
-project root (override with `TUNEVIEW_DB`). It accepts MusicXML (`.musicxml`,
+TuneView keeps leadsheets in a single SQLite file: `leadsheets.sqlite` in the
+project root when run from a checkout, or in your platform's data directory
+when installed (for example `~/.local/share/tuneview/leadsheets.sqlite` on
+Linux). Override it with `TUNEVIEW_DB`. It accepts MusicXML (`.musicxml`,
 `.xml` or compressed `.mxl`) and MuseScore 3/4 scores (`.mscz`/`.mscx`,
 converted to MusicXML on import). It's created empty the first time you run
 TuneView.
@@ -101,6 +126,25 @@ Playback in the browser is played by the browser that opened the tune, so every
 computer hears it through its own speakers and the machine running TuneView
 stays silent.
 
+## Publishing
+
+Publishing a GitHub release runs `.github/workflows/publish.yml`: it runs the
+test suite, checks that the release tag matches the version in `pyproject.toml`
+(`v1.2.3` ↔ `1.2.3`), builds the sdist and wheel, and uploads them to PyPI.
+Releases use PyPI Trusted Publishing (OIDC), so no API token is stored in the
+repository.
+
+Before the first release, add a Trusted Publisher for the `tuneview` project on
+PyPI with:
+
+- owner: `fccoelho`
+- repository: `tuneview`
+- workflow: `publish.yml`
+- environment: `pypi`
+
+The workflow can also be started manually from the Actions tab
+(`workflow_dispatch`).
+
 ## Keyboard
 
 | Key | Action |
@@ -117,3 +161,20 @@ stays silent.
 | `L` | show / hide the library |
 | `D` | dark / light |
 | `F11` | full screen (desktop) |
+
+
+## License
+
+Copyright (C) 2022–2026 Flávio Codeço Coelho.
+
+TuneView is free software: you can redistribute it and/or modify it under the
+terms of the GNU General Public License as published by the Free Software
+Foundation, version 3.
+
+TuneView is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along with
+TuneView; see [LICENSE](LICENSE). If not, see
+<https://www.gnu.org/licenses/gpl-3.0.html>.
