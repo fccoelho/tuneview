@@ -60,6 +60,12 @@ def lyric_words(text: str) -> list[str]:
     return [word for verse in verses(text) for line in verse.lines for word in line.split()]
 
 
+def first_verse_words(text: str) -> list[str]:
+    """The words of the first verse, which is what the chord chart aligns."""
+    vs = verses(text)
+    return [word for line in vs[0].lines for word in line.split()] if vs else []
+
+
 def spread_words(n_words: int, n_bars: int) -> list[int]:
     """How many consecutive words land on each bar when they're spread evenly."""
     if n_bars <= 0 or n_words <= 0:
@@ -125,57 +131,94 @@ def join_bars(bars: list[str], index: int) -> list[str]:
     return lines
 
 
-def _verse_text(entries: list[tuple[str, str]]) -> str:
-    """Join lyric syllables ('Hel' + 'lo') into words; 'single' entries are whole words."""
-    words: list[str] = []
+def _join_verse(entries: list[tuple[int, str, str]]) -> tuple[str, list[tuple[int, str]]]:
+    """Join one verse's lyric syllables into words, keeping each word's measure.
+
+    entries are (measure index, syllabic, text); returns (verse text, words
+    paired with the measure where the word starts).
+    """
+    words: list[tuple[int, str]] = []
     current = ""
-    for syllabic, text in entries:
-        text = " ".join(text.split())
+    current_measure = 0
+    for measure, syllabic, raw in entries:
+        text = " ".join(raw.split())
         if not text:
             continue
         kind = syllabic.strip().lower()
         if kind == "begin":
             if current:
-                words.append(current)
-            current = text
+                words.append((current_measure, current))
+            current, current_measure = text, measure
         elif kind == "middle":
+            if not current:
+                current_measure = measure
             current += text
         elif kind == "end":
+            if not current:
+                current_measure = measure
             current += text
-            words.append(current)
+            words.append((current_measure, current))
             current = ""
         else:  # single, or no <syllabic>
             if current:
-                words.append(current)
+                words.append((current_measure, current))
                 current = ""
-            words.append(text)
+            words.extend((measure, token) for token in text.split())
     if current:
-        words.append(current)
-    return " ".join(words)
+        words.append((current_measure, current))
+    return " ".join(word for _, word in words), words
 
 
-def extract_lyrics(musicxml: str | bytes) -> str:
-    """Lyrics embedded in a MusicXML score, with hyphenated syllables joined.
+def extract_lyrics_with_alignment(musicxml: str | bytes) -> tuple[str, list[str], list[int]]:
+    """Lyrics embedded in a MusicXML score, with the bars each word belongs to.
 
-    Lyrics are grouped by MusicXML verse number (number="1", "2", ...) and
-    separated by a blank line, like the text typed on the Lyrics page.  The
-    part with the most lyrics wins, so a melody part is preferred over
-    accompaniment staves.  Returns '' when the score has no lyrics.
+    Returns (text, bar numbers, words per bar).  The text is ready for the
+    Lyrics page; the bar numbers/counts are a default chord-chart alignment for
+    the first verse, so the words appear under the bars where they are actually
+    sung.  Further verses are kept in the text and can be edited as usual.
     """
     try:
         root = ET.fromstring(musicxml)
     except ET.ParseError:
-        return ""
+        return "", [], []
     parts = root.findall("part") or [root]
     part = max(parts, key=lambda p: len(p.findall(".//lyric")), default=None)
     if part is None or not part.findall(".//lyric"):
-        return ""
-    verses: dict[str, list[tuple[str, str]]] = {}
-    for lyric in part.iter("lyric"):
-        text = lyric.findtext("text") or ""
-        if not text.strip():
-            continue
-        number = lyric.get("number") or "1"
-        verses.setdefault(number, []).append((lyric.findtext("syllabic") or "single", text))
-    blocks = [_verse_text(entries) for entries in verses.values()]
-    return "\n\n".join(block for block in blocks if block)
+        return "", [], []
+
+    measures = part.findall("measure")
+    verses: dict[str, list[tuple[int, str, str]]] = {}
+    for index, measure in enumerate(measures):
+        for lyric in measure.iter("lyric"):
+            text = lyric.findtext("text") or ""
+            if not text.strip():
+                continue
+            number = lyric.get("number") or "1"
+            verses.setdefault(number, []).append(
+                (index, lyric.findtext("syllabic") or "single", text))
+
+    blocks = []
+    verse_words = []
+    for entries in verses.values():
+        text, words = _join_verse(entries)
+        blocks.append(text)
+        verse_words.append(words)
+    text = "\n\n".join(block for block in blocks if block)
+    if not text:
+        return "", [], []
+
+    bars: list[str] = []
+    counts: list[int] = []
+    if measures and verse_words:
+        bars = [m.get("number") or str(i + 1) for i, m in enumerate(measures)]
+        counts = [0] * len(measures)
+        for measure, word in verse_words[0]:
+            counts[measure] += len(word.split())
+        if sum(counts) != len(first_verse_words(text)):
+            bars, counts = [], []
+    return text, bars, counts
+
+
+def extract_lyrics(musicxml: str | bytes) -> str:
+    """Lyrics embedded in a MusicXML score, with hyphenated syllables joined."""
+    return extract_lyrics_with_alignment(musicxml)[0]

@@ -180,3 +180,12 @@ def test_library_creates_its_data_directory(tmp_path):
     lib = Library(path)
     lib.create()
     assert path.parent.is_dir() and path.is_file()
+
+
+def test_import_stores_the_score_lyric_alignment(tmp_path, mini_path):
+    from tuneview.importer import import_files
+
+    lib = Library(tmp_path / "lib.sqlite")
+    import_files([("mini.musicxml", mini_path.read_bytes())], lib)
+    [song] = lib.songs()
+    assert lib.lyrics_alignment(song.id) == (["1", "2", "3", "4"], [2, 0, 0, 0])

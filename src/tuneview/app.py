@@ -38,7 +38,8 @@ from .importer import (
 )
 from .library import Library, SongInfo, search
 from .lyrics import (
-    chunks, join_bars, lyric_words, spread_words, split_bars, split_words, verses,
+    chunks, first_verse_words, join_bars, lyric_words, spread_words, split_bars, split_words,
+    verses,
 )
 from .player import (
     PLAY_MODES,
@@ -883,6 +884,18 @@ class TuneView:
         """The bars the chart view prints, in order (what the lyrics align to)."""
         return [b for b in r.bars if b.chords or b.rest_bars or b.number not in ("0", "")]
 
+    def _chart_words(self, r: Rendered) -> list[str]:
+        """The words the chart aligns: the first verse when the score supplied its alignment."""
+        text = self.library.lyrics(r.song.id)
+        words = lyric_words(text)
+        if not words:
+            return []
+        saved = self.library.lyrics_alignment(r.song.id)
+        first = first_verse_words(text)
+        if saved and len(first) < len(words) and sum(saved[1]) == len(first):
+            return first  # extracted multi-verse score: chart shows verse one
+        return words
+
     def _chart_lyric_counts(self, r: Rendered, bars: list[ChartBar],
                             words: list[str]) -> list[int]:
         """The saved words-per-bar split, or an even spread when it no longer fits."""
@@ -893,6 +906,14 @@ class TuneView:
             if (saved_bars == [b.number for b in bars] and len(counts) == len(bars)
                     and sum(counts) == len(words)):
                 return counts
+            # The score may have a pickup bar (number 0) that the chart omits;
+            # map what the chart shows by bar number instead of requiring an exact list.
+            if len(set(saved_bars)) == len(saved_bars):
+                by_bar = dict(zip(saved_bars, counts))
+                if all(b.number in by_bar for b in bars):
+                    picked = [by_bar[b.number] for b in bars]
+                    if sum(picked) == len(words):
+                        return picked
         return spread_words(len(words), len(bars))
 
     def _chart_lyrics_toolbar(self) -> ft.Control:
@@ -916,7 +937,7 @@ class TuneView:
         size = self.state.zoom * 0.62  # chord font size follows the zoom setting
         per_line = self._bars_per_line()
         # The lyrics run word by word across the tune's bars; each bar shows its own.
-        words = lyric_words(self.library.lyrics(r.song.id))
+        words = self._chart_words(r)
         counts = self._chart_lyric_counts(r, bars, words) if words else []
         parts = chunks(words, counts) if words else []
         show_lyrics = bool(parts) and self.state.chart_lyrics
@@ -959,7 +980,7 @@ class TuneView:
         if r is None or song is None:
             return
         bars = self._chart_bars(r)
-        words = lyric_words(self.library.lyrics(song.id))
+        words = self._chart_words(r)
         if not words or not bars:
             return
         counts = self._chart_lyric_counts(r, bars, words)

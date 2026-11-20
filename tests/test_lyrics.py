@@ -1,8 +1,8 @@
 import pytest
 
 from tuneview.lyrics import (
-    Verse, chunks, extract_lyrics, heading_of, join_bars, join_words, lyric_words, spread_words,
-    split_bars, split_words, verses,
+    Verse, chunks, extract_lyrics, extract_lyrics_with_alignment, first_verse_words, heading_of,
+    join_bars, join_words, lyric_words, spread_words, split_bars, split_words, verses,
 )
 
 
@@ -100,3 +100,35 @@ def test_extract_lyrics_joins_syllables_and_splits_verses():
     assert extract_lyrics(xml) == "Hello world\n\nBonjour"
     assert extract_lyrics("<score-partwise><part id='P1'/></score-partwise>") == ""
     assert extract_lyrics("not xml") == ""
+
+
+def test_extract_lyrics_keeps_the_bar_of_each_word():
+    xml = """<score-partwise><part-list><score-part id="P1"><part-name>Voice</part-name>
+      </score-part></part-list><part id="P1">
+      <measure number="1">
+        <note><lyric number="1"><syllabic>begin</syllabic><text>Hel</text></lyric></note>
+        <note><lyric number="1"><syllabic>end</syllabic><text>lo</text></lyric></note>
+        <note><lyric number="1"><text>world</text></lyric></note>
+      </measure>
+      <measure number="2"><note><rest/></note></measure>
+      <measure number="3"><note><lyric number="1"><text>again</text></lyric></note></measure>
+    </part></score-partwise>"""
+    text, bars, counts = extract_lyrics_with_alignment(xml)
+    assert text == "Hello world again"
+    assert bars == ["1", "2", "3"]
+    assert counts == [2, 0, 1]
+    assert sum(counts) == len(lyric_words(text))
+
+
+def test_extract_lyrics_aligns_the_first_verse_of_a_multi_verse_score():
+    xml = """<score-partwise><part-list><score-part id="P1"><part-name>Voice</part-name>
+      </score-part></part-list><part id="P1"><measure number="1">
+        <note><lyric number="1"><text>One</text></lyric>
+              <lyric number="2"><text>Um</text></lyric></note>
+      </measure><measure number="2">
+        <note><lyric number="1"><text>two</text></lyric></note>
+      </measure></part></score-partwise>"""
+    text, bars, counts = extract_lyrics_with_alignment(xml)
+    assert text == "One two\n\nUm"
+    assert bars == ["1", "2"] and counts == [1, 1]
+    assert first_verse_words(text) == ["One", "two"]

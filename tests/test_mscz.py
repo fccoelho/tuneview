@@ -109,6 +109,7 @@ def test_mscz_imports_into_the_library(tmp_path):
     assert stored.startswith('<?xml') and "<score-partwise" in stored
     assert parse_metadata(stored.encode(), Path("Test Tune.mscz"))["chords"] == 2
     assert lib.lyrics(song.id) == "Hello"  # adopted from the score on import
+    assert lib.lyrics_alignment(song.id) == (["1", "2"], [1, 0])
 
 
 def test_old_musescore_files_are_rejected_with_a_hint(tmp_path):

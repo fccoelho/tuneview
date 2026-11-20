@@ -17,8 +17,9 @@ way you need to play it:
   bar); `Backspace`/`Delete` at a bar's start/end join it with the neighbouring
   bar and pull the later bars back. It's easy to read from a distance.
 - **Lyrics**: the words in large print. Lyrics already written under the melody
-  in an imported score are extracted automatically (and re-read if a tune is
-  imported again); otherwise add or edit them with the Lyrics view's button:
+  in an imported score are extracted automatically, keeping the bars they belong
+  to so the chord chart starts out aligned (the first verse when the score has
+  several); otherwise add or edit them with the Lyrics view's button:
   paste or type them, with a blank line between verses; a line like `[Chorus]`
   or `Verse 2:` on top of a verse becomes its heading.
 

@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .library import Library, default_db_path, fold
-from .lyrics import extract_lyrics
+from .lyrics import extract_lyrics_with_alignment, first_verse_words
 from .mscz import mscx_to_musicxml, mscz_to_musicxml
 
 MAJOR_KEYS = ["C♭", "G♭", "D♭", "A♭", "E♭", "B♭", "F", "C", "G", "D", "A", "E", "B", "F♯", "C♯"]
@@ -191,9 +191,14 @@ def _adopt_embedded_lyrics(library: Library, song_id: int, musicxml: bytes) -> N
     """Use the lyrics already written under the melody when TuneView has none."""
     if library.lyrics(song_id):
         return
-    embedded = extract_lyrics(musicxml)
-    if embedded:
-        library.set_lyrics(song_id, embedded)
+    text, bars, counts = extract_lyrics_with_alignment(musicxml)
+    if not text:
+        return
+    library.set_lyrics(song_id, text)
+    # The score already says which bar each word belongs to; keep that as the
+    # starting alignment instead of making the chart spread the words evenly.
+    if bars and sum(counts) == len(first_verse_words(text)):
+        library.set_lyrics_alignment(song_id, bars, counts)
 
 
 def import_score(library: Library, data: bytes, name: str, result: ImportResult, *,
